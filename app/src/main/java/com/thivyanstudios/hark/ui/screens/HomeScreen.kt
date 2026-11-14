@@ -9,6 +9,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,6 +30,7 @@ import com.thivyanstudios.hark.R
 import com.thivyanstudios.hark.ui.theme.BetaBadge
 import com.thivyanstudios.hark.ui.theme.HarkText
 import com.thivyanstudios.hark.ui.theme.SquishyBox
+import com.thivyanstudios.hark.service.AudioInputDevice
 import kotlinx.coroutines.delay
 
 @Composable
@@ -34,9 +38,13 @@ fun HomeScreen(
     isStreaming: Boolean,
     onStreamButtonClick: () -> Unit,
     hapticFeedbackEnabled: Boolean,
-    isModelAvailable: Boolean
+    isModelAvailable: Boolean,
+    inputDevices: List<AudioInputDevice>,
+    selectedInputDeviceId: Int?,
+    onInputDeviceSelected: (Int) -> Unit
 ) {
     var isButtonEnabled by remember { mutableStateOf(true) }
+    var inputDeviceMenuExpanded by remember { mutableStateOf(false) }
     
     val infiniteTransition = rememberInfiniteTransition(label = "PulseTransition")
     
@@ -103,6 +111,36 @@ fun HomeScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                 )
             )
+        }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 168.dp)
+        ) {
+            OutlinedButton(
+                onClick = { inputDeviceMenuExpanded = true },
+                enabled = inputDevices.isNotEmpty()
+            ) {
+                Text(
+                    text = inputDevices.firstOrNull { it.id == selectedInputDeviceId }?.label
+                        ?: "Phone Built-in Mic"
+                )
+            }
+            DropdownMenu(
+                expanded = inputDeviceMenuExpanded,
+                onDismissRequest = { inputDeviceMenuExpanded = false }
+            ) {
+                inputDevices.forEach { device ->
+                    DropdownMenuItem(
+                        text = { Text(device.label) },
+                        onClick = {
+                            onInputDeviceSelected(device.id)
+                            inputDeviceMenuExpanded = false
+                        }
+                    )
+                }
+            }
         }
 
         // Center Mic Button Area

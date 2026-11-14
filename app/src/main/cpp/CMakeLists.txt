@@ -16,6 +16,30 @@ set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size
 
 find_package(oboe REQUIRED CONFIG)
 
+include(FetchContent)
+FetchContent_Declare(
+    rnnoise_source
+    GIT_REPOSITORY https://github.com/xiph/rnnoise.git
+    GIT_TAG 6cbfd53eb348a8d394e0757b4025c6ded34eb2b6
+)
+FetchContent_GetProperties(rnnoise_source)
+if(NOT rnnoise_source_POPULATED)
+    FetchContent_Populate(rnnoise_source)
+endif()
+
+add_library(rnnoise STATIC
+    ${rnnoise_source_SOURCE_DIR}/src/denoise.c
+    ${rnnoise_source_SOURCE_DIR}/src/rnn.c
+    ${rnnoise_source_SOURCE_DIR}/src/rnn_data.c
+    ${rnnoise_source_SOURCE_DIR}/src/rnn_reader.c
+    ${rnnoise_source_SOURCE_DIR}/src/pitch.c
+    ${rnnoise_source_SOURCE_DIR}/src/kiss_fft.c
+    ${rnnoise_source_SOURCE_DIR}/src/celt_lpc.c
+)
+target_include_directories(rnnoise PUBLIC ${rnnoise_source_SOURCE_DIR}/include)
+target_include_directories(rnnoise PRIVATE ${rnnoise_source_SOURCE_DIR}/src)
+target_compile_options(rnnoise PRIVATE -O3)
+
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,6 +59,7 @@ endif()
 
 target_link_libraries(hark
     oboe::oboe
+    rnnoise
     log
     android
     m

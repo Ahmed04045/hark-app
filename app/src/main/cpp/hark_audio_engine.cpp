@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <oboe/FifoBuffer.h>
+#include <rnnoise.h>
 
 #define TAG "HarkAudioEngine"
 
@@ -13,13 +14,16 @@ HarkAudioEngine::~HarkAudioEngine() {
     stop();
 }
 
-bool HarkAudioEngine::start(int32_t sampleRate, int32_t framesPerBurst) {
+bool HarkAudioEngine::start(int32_t sampleRate, int32_t framesPerBurst, int32_t inputDeviceId) {
     mShouldBeStreaming.store(false, std::memory_order_release);
     joinRestartThread();
 
     std::lock_guard<std::mutex> lock(mStreamLock);
-    mSampleRate = sampleRate;
+    (void) sampleRate;
+    // RNNoise operates at 48 kHz; request that rate and let Android route-convert as needed.
+    mSampleRate = 48000;
     mFramesPerBurst = framesPerBurst;
+    mInputDeviceId = inputDeviceId;
 
     bool success = openStreamsLocked();
     mShouldBeStreaming.store(success, std::memory_order_release);
@@ -31,8 +35,10 @@ bool HarkAudioEngine::openStreamsLocked() {
 
     // Reset processing states
     mEnvelope = 0.0f;
-    mPrevInput = 0.0f;
-    mPrevOutput = 0.0f;
+    mLimiterGain = 1.0f;
+    mLimiterReleaseCoefficient =
+            expf(-1.0f / (static_cast<float>(mSampleRate) * 0.080f));
+    mRnnoiseOutputOffset = kRnnoiseFrameSize;
     mIsBuffering = true;
 
     uint32_t fifoCapacity = std::max(static_cast<uint32_t>(mFramesPerBurst) * 16, static_cast<uint32_t>(4096));
@@ -42,10 +48,15 @@ bool HarkAudioEngine::openStreamsLocked() {
     // Buffer for 10 seconds of audio at the hardware sample rate.
     mTranscriptionFifo = std::make_unique<oboe::FifoBuffer>(sizeof(float), mSampleRate * 10);
 
-    // Initialize Treble Boost coefficients (High Shelf, 3kHz, 6dB @ 48kHz)
-    // These are pre-calculated for the default 48kHz sample rate.
-    // If the sample rate is different, they will be recalculated in openStreamsLocked.
-    updateTrebleBoostCoefficients(mSampleRate);
+    updateHighPassCoefficients(mSampleRate);
+    mActiveSpeechPresenceGainDb = mSpeechPresenceGainDb.load(std::memory_order_acquire);
+    updateSpeechPresenceCoefficients(mSampleRate, mActiveSpeechPresenceGainDb);
+    mRnnoiseState = rnnoise_create(nullptr);
+    if (!mRnnoiseState) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "Failed to initialize RNNoise");
+        closeStreams();
+        return false;
+    }
 
     oboe::AudioStreamBuilder inBuilder;
     inBuilder.setDirection(oboe::Direction::Input)
@@ -57,10 +68,26 @@ bool HarkAudioEngine::openStreamsLocked() {
             ->setInputPreset(oboe::InputPreset::VoiceCommunication)
             ->setDataCallback(this)
             ->setErrorCallback(this);
+    if (mInputDeviceId >= 0) {
+        inBuilder.setDeviceId(mInputDeviceId);
+    }
 
     oboe::Result result = inBuilder.openStream(mInStream);
     if (result != oboe::Result::OK) {
         __android_log_print(ANDROID_LOG_ERROR, TAG, "Error opening input stream: %s", oboe::convertToText(result));
+        closeStreams();
+        return false;
+    }
+    if (mInStream->getSampleRate() != mSampleRate) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG,
+                "RNNoise requires %d Hz input, got %d Hz", mSampleRate, mInStream->getSampleRate());
+        closeStreams();
+        return false;
+    }
+    if (mInStream->getChannelCount() != 1) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG,
+                "RNNoise requires mono input, got %d channels", mInStream->getChannelCount());
+        closeStreams();
         return false;
     }
 
@@ -69,7 +96,8 @@ bool HarkAudioEngine::openStreamsLocked() {
             ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
             ->setSharingMode(oboe::SharingMode::Shared) // Use Shared for better compatibility
             ->setFormat(oboe::AudioFormat::Float)
-            ->setChannelCount(oboe::ChannelCount::Mono)
+            ->setChannelCount(oboe::ChannelCount::Stereo)
+            ->setUsage(oboe::Usage::Media)
             ->setSampleRate(mSampleRate)
             ->setDataCallback(this)
             ->setErrorCallback(this);
@@ -77,6 +105,18 @@ bool HarkAudioEngine::openStreamsLocked() {
     result = outBuilder.openStream(mOutStream);
     if (result != oboe::Result::OK) {
         __android_log_print(ANDROID_LOG_ERROR, TAG, "Error opening output stream: %s", oboe::convertToText(result));
+        closeStreams();
+        return false;
+    }
+    if (mOutStream->getSampleRate() != mSampleRate) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG,
+                "RNNoise path requires %d Hz output, got %d Hz", mSampleRate, mOutStream->getSampleRate());
+        closeStreams();
+        return false;
+    }
+    if (mOutStream->getChannelCount() != 2) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG,
+                "Stereo output required, got %d channels", mOutStream->getChannelCount());
         closeStreams();
         return false;
     }
@@ -107,6 +147,10 @@ void HarkAudioEngine::closeStreams() {
     if (mInStream) { mInStream->stop(); mInStream->close(); mInStream.reset(); }
     mTranscriptionFifo.reset();
     mFifoBuffer.reset();
+    if (mRnnoiseState) {
+        rnnoise_destroy(mRnnoiseState);
+        mRnnoiseState = nullptr;
+    }
     mTranscriptionLevel.store(0.0f, std::memory_order_release);
 }
 
@@ -121,14 +165,6 @@ float HarkAudioEngine::getTranscriptionLevel() {
     return mTranscriptionLevel.load(std::memory_order_acquire);
 }
 
-int32_t HarkAudioEngine::getSessionId() {
-    std::lock_guard<std::mutex> lock(mStreamLock);
-    if (mInStream) {
-        return mInStream->getSessionId();
-    }
-    return -1;
-}
-
 void HarkAudioEngine::setMicrophoneGain(float gain) { mGain.store(gain, std::memory_order_release); }
 void HarkAudioEngine::setNoiseSuppressionEnabled(bool enabled) {
     mIsNoiseSuppressionEnabled.store(enabled, std::memory_order_release);
@@ -139,8 +175,8 @@ void HarkAudioEngine::setDynamicsProcessingEnabled(bool enabled) {
 void HarkAudioEngine::setTranscriptModeEnabled(bool enabled) {
     mIsTranscriptModeEnabled.store(enabled, std::memory_order_release);
 }
-void HarkAudioEngine::setTrebleBoostEnabled(bool enabled) {
-    mIsTrebleBoostEnabled.store(enabled, std::memory_order_release);
+void HarkAudioEngine::setSpeechPresenceGainDb(float gainDb) {
+    mSpeechPresenceGainDb.store(std::clamp(gainDb, 3.0f, 8.0f), std::memory_order_release);
 }
 
 oboe::DataCallbackResult HarkAudioEngine::onAudioReady(
@@ -177,57 +213,56 @@ oboe::DataCallbackResult HarkAudioEngine::onAudioReady(
         pushToTranscriptionFifo(mGainedBuffer, framesToProcess);
     } else {
         auto *outputData = static_cast<float *>(audioData);
+        const int32_t channelCount = audioStream->getChannelCount();
 
         if (mIsTranscriptModeEnabled.load(std::memory_order_acquire)) {
-            std::fill_n(outputData, numFrames, 0.0f);
+            std::fill_n(outputData, numFrames * channelCount, 0.0f);
             return oboe::DataCallbackResult::Continue;
         }
 
-        // Pre-buffering logic to prevent snapping from minor clock drift/jitter
-        uint32_t framesAvailable = mFifoBuffer->getFullFramesAvailable();
-        if (mIsBuffering) {
-            if (framesAvailable >= static_cast<uint32_t>(numFrames * 4)) {
-                mIsBuffering = false;
-            } else {
-                std::fill_n(outputData, numFrames, 0.0f);
-                return oboe::DataCallbackResult::Continue;
-            }
+        const float currentGain = mGain.load(std::memory_order_acquire);
+        const bool noiseSuppressionEnabled =
+                mIsNoiseSuppressionEnabled.load(std::memory_order_acquire);
+        const bool dynamicsEnabled =
+                mIsDynamicsProcessingEnabled.load(std::memory_order_acquire);
+        const float requestedGainDb =
+                mSpeechPresenceGainDb.load(std::memory_order_acquire);
+        if (requestedGainDb != mActiveSpeechPresenceGainDb) {
+            mActiveSpeechPresenceGainDb = requestedGainDb;
+            updateSpeechPresenceCoefficients(mSampleRate, requestedGainDb);
         }
 
-        int32_t framesRead = mFifoBuffer->read(outputData, numFrames);
-
-        // Cache atomic loads for the duration of this callback
-        const float currentGain = mGain.load(std::memory_order_acquire);
-        const bool dynamicsEnabled = mIsDynamicsProcessingEnabled.load(std::memory_order_acquire);
-        const bool trebleEnabled = mIsTrebleBoostEnabled.load(std::memory_order_acquire);
-
-        if (framesRead > 0) {
-            for (int i = 0; i < framesRead; i++) {
-                float rawSample = outputData[i];
-
-                // 1. PRIMARY PATH (The "Hearing Aid" stream)
-                float processedSample = rawSample;
-                if (trebleEnabled) {
-                    processedSample = applyTrebleBoost(processedSample);
+        for (int32_t frame = 0; frame < numFrames; ++frame) {
+            if (mRnnoiseOutputOffset >= kRnnoiseFrameSize) {
+                uint32_t framesAvailable = mFifoBuffer->getFullFramesAvailable();
+                if (framesAvailable < kRnnoiseFrameSize) {
+                    std::fill_n(outputData + frame * channelCount,
+                                (numFrames - frame) * channelCount, 0.0f);
+                    mIsBuffering = true;
+                    break;
                 }
-                float primarySignal = processedSample * currentGain;
 
-                // 2. SAFETY: Dynamics Processing
-                if (dynamicsEnabled) {
-                    outputData[i] = applySoftKneeLimiter(primarySignal);
-                } else {
-                    outputData[i] = std::clamp(primarySignal, -1.1f, 1.1f);
+                if (mIsBuffering &&
+                    framesAvailable < static_cast<uint32_t>(std::max(numFrames * 4, kRnnoiseFrameSize))) {
+                    std::fill_n(outputData, numFrames * channelCount, 0.0f);
+                    break;
                 }
+                mIsBuffering = false;
+
+                const int32_t framesRead = mFifoBuffer->read(mRnnoiseInput, kRnnoiseFrameSize);
+                if (framesRead != kRnnoiseFrameSize) {
+                    std::fill_n(outputData + frame * channelCount,
+                                (numFrames - frame) * channelCount, 0.0f);
+                    mIsBuffering = true;
+                    break;
+                }
+                processRnnoiseFrame(noiseSuppressionEnabled, dynamicsEnabled, currentGain);
             }
 
-            if (framesRead < numFrames) {
-                // We ran out of frames! Enter buffering mode to avoid repeated snaps
-                std::fill_n(outputData + framesRead, numFrames - framesRead, 0.0f);
-                mIsBuffering = true;
+            const float sample = mRnnoiseOutput[mRnnoiseOutputOffset++];
+            for (int32_t channel = 0; channel < channelCount; ++channel) {
+                outputData[frame * channelCount + channel] = sample;
             }
-        } else {
-            std::fill_n(outputData, numFrames, 0.0f);
-            mIsBuffering = true;
         }
     }
     return oboe::DataCallbackResult::Continue;
@@ -248,47 +283,79 @@ void HarkAudioEngine::pushToTranscriptionFifo(const float* data, int32_t numFram
 }
 
 
-float HarkAudioEngine::applyTrebleBoost(float input) {
-    float output = mB0 * input + mB1 * mX1 + mB2 * mX2 - mA1 * mY1 - mA2 * mY2;
-    mX2 = mX1;
-    mX1 = input;
-    mY2 = mY1;
-    mY1 = output;
+float HarkAudioEngine::Biquad::process(float input) {
+    const float output = b0 * input + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+    x2 = x1;
+    x1 = input;
+    y2 = y1;
+    y1 = output;
     return output;
 }
 
-void HarkAudioEngine::updateTrebleBoostCoefficients(int32_t sampleRate) {
-    const float f0 = 3000.0f;
-    const float gainDb = 8.0f; // Slightly more boost for clarity
-    const float A = powf(10, gainDb / 40.0f);
-    const float w0 = 2.0f * (float)M_PI * f0 / (float)sampleRate;
+void HarkAudioEngine::Biquad::reset() {
+    x1 = x2 = y1 = y2 = 0.0f;
+}
+
+void HarkAudioEngine::updateHighPassCoefficients(int32_t sampleRate) {
+    const float w0 = 2.0f * static_cast<float>(M_PI) * 90.0f / static_cast<float>(sampleRate);
     const float cosW0 = cosf(w0);
     const float sinW0 = sinf(w0);
-    const float alpha = sinW0 / 2.0f; // S=1
+    const float alpha = sinW0 / (2.0f * 0.70710678f);
+    const float a0 = 1.0f + alpha;
+    mHighPass.b0 = ((1.0f + cosW0) / 2.0f) / a0;
+    mHighPass.b1 = -(1.0f + cosW0) / a0;
+    mHighPass.b2 = mHighPass.b0;
+    mHighPass.a1 = (-2.0f * cosW0) / a0;
+    mHighPass.a2 = (1.0f - alpha) / a0;
+    mHighPass.reset();
+}
 
-    const float a0 = (A + 1.0f) - (A - 1.0f) * cosW0 + 2.0f * sqrtf(A) * alpha;
-    mB0 = (A * ((A + 1.0f) + (A - 1.0f) * cosW0 + 2.0f * sqrtf(A) * alpha)) / a0;
-    mB1 = (-2.0f * A * ((A - 1.0f) + (A + 1.0f) * cosW0)) / a0;
-    mB2 = (A * ((A + 1.0f) + (A - 1.0f) * cosW0 - 2.0f * sqrtf(A) * alpha)) / a0;
-    mA1 = (2.0f * ((A - 1.0f) - (A + 1.0f) * cosW0)) / a0;
-    mA2 = ((A + 1.0f) - (A - 1.0f) * cosW0 - 2.0f * sqrtf(A) * alpha) / a0;
+void HarkAudioEngine::updateSpeechPresenceCoefficients(int32_t sampleRate, float gainDb) {
+    const float A = powf(10.0f, gainDb / 40.0f);
+    const float w0 = 2.0f * static_cast<float>(M_PI) * 3200.0f / static_cast<float>(sampleRate);
+    const float cosW0 = cosf(w0);
+    const float alpha = sinf(w0) / (2.0f * 1.0f);
+    const float a0 = 1.0f + alpha / A;
+    mSpeechPresenceEq.b0 = (1.0f + alpha * A) / a0;
+    mSpeechPresenceEq.b1 = (-2.0f * cosW0) / a0;
+    mSpeechPresenceEq.b2 = (1.0f - alpha * A) / a0;
+    mSpeechPresenceEq.a1 = (-2.0f * cosW0) / a0;
+    mSpeechPresenceEq.a2 = (1.0f - alpha / A) / a0;
+    mSpeechPresenceEq.reset();
+}
 
-    // Reset filter state
-    mX1 = mX2 = mY1 = mY2 = 0;
+void HarkAudioEngine::processRnnoiseFrame(
+        bool noiseSuppressionEnabled, bool dynamicsEnabled, float gain) {
+    for (int32_t i = 0; i < kRnnoiseFrameSize; ++i) {
+        const float highPassed = mHighPass.process(mRnnoiseInput[i]);
+        mRnnoiseScratch[i] = highPassed * 32768.0f;
+    }
+
+    if (noiseSuppressionEnabled && mRnnoiseState) {
+        rnnoise_process_frame(mRnnoiseState, mRnnoiseOutput, mRnnoiseScratch);
+    } else {
+        std::copy_n(mRnnoiseScratch, kRnnoiseFrameSize, mRnnoiseOutput);
+    }
+
+    for (int32_t i = 0; i < kRnnoiseFrameSize; ++i) {
+        const float denoised = mRnnoiseOutput[i] / 32768.0f;
+        const float clarityAdjusted = mSpeechPresenceEq.process(denoised);
+        float gained = clarityAdjusted * gain;
+        if (dynamicsEnabled) {
+            gained = applySoftKneeLimiter(gained);
+        }
+        mRnnoiseOutput[i] = applyPeakLimiter(gained);
+    }
+    mRnnoiseOutputOffset = 0;
 }
 
 float HarkAudioEngine::applySoftKneeLimiter(float input) {
-    const float threshold = 0.75f; // Slightly lower for safety
-    const float kneeWidth = 0.15f;
+    constexpr float threshold = 0.75f;
+    constexpr float kneeWidth = 0.15f;
+    constexpr float attack = 0.05f;
+    constexpr float release = 0.0005f;
+    const float absInput = std::abs(input);
 
-    // Attack must be fast to catch peaks. Release must be slow to prevent "hissing/pumping" distortion.
-    // At 48kHz, 0.05 is ~0.4ms attack. 0.0005 is ~40ms release.
-    const float attack = 0.05f;
-    const float release = 0.0005f;
-
-    float absInput = std::abs(input);
-
-    // Envelope follower
     if (absInput > mEnvelope) {
         mEnvelope = absInput * attack + mEnvelope * (1.0f - attack);
     } else {
@@ -296,26 +363,34 @@ float HarkAudioEngine::applySoftKneeLimiter(float input) {
     }
 
     if (mEnvelope <= threshold - kneeWidth / 2.0f) return input;
-
-    // Proper gain reduction instead of hard-clipping the waveform
-    float targetGain = 1.0f;
-    if (mEnvelope >= threshold + kneeWidth / 2.0f) {
-        targetGain = threshold / mEnvelope;
-    } else {
-        // Soft knee region
-        float diff = mEnvelope - (threshold - kneeWidth / 2.0f);
-        float reduction = (diff * diff) / (2.0f * kneeWidth);
+    float targetGain = threshold / mEnvelope;
+    if (mEnvelope < threshold + kneeWidth / 2.0f) {
+        const float diff = mEnvelope - (threshold - kneeWidth / 2.0f);
+        const float reduction = (diff * diff) / (2.0f * kneeWidth);
         targetGain = (mEnvelope - reduction) / mEnvelope;
     }
-
     return input * targetGain;
+}
+
+float HarkAudioEngine::applyPeakLimiter(float input) {
+    constexpr float threshold = 0.70794578f; // -3 dBFS
+    const float absInput = std::abs(input);
+    const float targetGain = absInput > threshold ? threshold / absInput : 1.0f;
+
+    if (targetGain < mLimiterGain) {
+        mLimiterGain = targetGain;
+    } else {
+        mLimiterGain = mLimiterReleaseCoefficient * mLimiterGain +
+                (1.0f - mLimiterReleaseCoefficient) * targetGain;
+    }
+
+    return std::clamp(input * mLimiterGain, -threshold, threshold);
 }
 
 void HarkAudioEngine::onErrorAfterClose(oboe::AudioStream *audioStream, oboe::Result error) {
     __android_log_print(ANDROID_LOG_ERROR, TAG, "Stream error: %s", oboe::convertToText(error));
 
-    // Exclusive low-latency streams are torn down by the OS on route changes and
-    // screen-off. Oboe requires reopening the stream after ErrorDisconnected.
+    // Oboe requires reopening the stream after an audio route disconnect.
     if (error != oboe::Result::ErrorDisconnected) return;
     if (!mShouldBeStreaming.load(std::memory_order_acquire)) return;
 

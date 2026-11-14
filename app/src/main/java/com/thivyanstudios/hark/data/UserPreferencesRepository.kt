@@ -33,7 +33,7 @@ class UserPreferencesRepository @Inject constructor(
         val MICROPHONE_GAIN = floatPreferencesKey("microphone_gain")
         val NOISE_SUPPRESSION_ENABLED = booleanPreferencesKey("noise_suppression_enabled")
         val DYNAMICS_PROCESSING_ENABLED = booleanPreferencesKey("dynamics_processing_enabled")
-        val TREBLE_BOOST_ENABLED = booleanPreferencesKey("treble_boost_enabled")
+        val SPEECH_PRESENCE_GAIN_DB = floatPreferencesKey("speech_presence_gain_db")
         val BYPASS_BLUETOOTH_CHECKS = booleanPreferencesKey("bypass_bluetooth_checks")
         val TRANSCRIPT_MODE_ENABLED = booleanPreferencesKey("transcript_mode_enabled")
         val WHISPER_THREADS = androidx.datastore.preferences.core.intPreferencesKey("whisper_threads")
@@ -59,9 +59,9 @@ class UserPreferencesRepository @Inject constructor(
                 keepScreenOn = preferences[PreferenceKeys.KEEP_SCREEN_ON] ?: false,
                 enableBluetoothHeadsetSupport = preferences[PreferenceKeys.ENABLE_BLUETOOTH_HEADSET_SUPPORT] ?: false,
                 microphoneGain = preferences[PreferenceKeys.MICROPHONE_GAIN] ?: Constants.Preferences.DEFAULT_GAIN,
-                noiseSuppressionEnabled = preferences[PreferenceKeys.NOISE_SUPPRESSION_ENABLED] ?: false,
+                noiseSuppressionEnabled = preferences[PreferenceKeys.NOISE_SUPPRESSION_ENABLED] ?: true,
                 dynamicsProcessingEnabled = preferences[PreferenceKeys.DYNAMICS_PROCESSING_ENABLED] ?: false,
-                trebleBoostEnabled = preferences[PreferenceKeys.TREBLE_BOOST_ENABLED] ?: false,
+                speechPresenceGainDb = preferences[PreferenceKeys.SPEECH_PRESENCE_GAIN_DB] ?: 6.0f,
                 bypassBluetoothChecks = preferences[PreferenceKeys.BYPASS_BLUETOOTH_CHECKS] ?: false,
                 transcriptModeEnabled = preferences[PreferenceKeys.TRANSCRIPT_MODE_ENABLED] ?: false,
                 whisperThreads = preferences[PreferenceKeys.WHISPER_THREADS] ?: 4,
@@ -98,8 +98,8 @@ class UserPreferencesRepository @Inject constructor(
         it[PreferenceKeys.DYNAMICS_PROCESSING_ENABLED] = isEnabled
     }
 
-    suspend fun setTrebleBoostEnabled(isEnabled: Boolean) = update {
-        it[PreferenceKeys.TREBLE_BOOST_ENABLED] = isEnabled
+    suspend fun setSpeechPresenceGainDb(gainDb: Float) = update {
+        it[PreferenceKeys.SPEECH_PRESENCE_GAIN_DB] = gainDb.coerceIn(3.0f, 8.0f)
     }
 
     suspend fun setBypassBluetoothChecks(isEnabled: Boolean) = update {

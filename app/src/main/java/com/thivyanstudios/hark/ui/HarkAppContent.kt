@@ -85,7 +85,10 @@ fun HarkAppContent(
                         isStreaming = uiState.isStreaming,
                         onStreamButtonClick = onToggleStreaming,
                         hapticFeedbackEnabled = uiState.hapticFeedbackEnabled,
-                        isModelAvailable = uiState.isModelAvailable
+                        isModelAvailable = uiState.isModelAvailable,
+                        inputDevices = uiState.audioInputDevices,
+                        selectedInputDeviceId = uiState.selectedInputDeviceId,
+                        onInputDeviceSelected = mainViewModel::selectInputDevice
                     )
                 }
                 composable(Navigation.ROUTE_TRANSCRIBE) {

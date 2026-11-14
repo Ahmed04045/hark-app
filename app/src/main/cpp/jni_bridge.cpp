@@ -15,10 +15,11 @@ Java_com_thivyanstudios_hark_audio_AudioEngine_nativeDelete(JNIEnv *env, jobject
 
 extern "C"
 JNIEXPORT jboolean JNICALL
-Java_com_thivyanstudios_hark_audio_AudioEngine_nativeStart(JNIEnv *env, jobject thiz, jlong handle, jint sample_rate, jint frames_per_burst) {
+Java_com_thivyanstudios_hark_audio_AudioEngine_nativeStart(
+        JNIEnv *env, jobject thiz, jlong handle, jint sample_rate, jint frames_per_burst, jint input_device_id) {
     auto *engine = reinterpret_cast<HarkAudioEngine *>(handle);
     if (engine) {
-        return (jboolean) engine->start(sample_rate, frames_per_burst);
+        return (jboolean) engine->start(sample_rate, frames_per_burst, input_device_id);
     }
     return JNI_FALSE;
 }
@@ -70,10 +71,11 @@ Java_com_thivyanstudios_hark_audio_AudioEngine_nativeSetTranscriptModeEnabled(JN
 
 extern "C"
 JNIEXPORT void JNICALL
-Java_com_thivyanstudios_hark_audio_AudioEngine_nativeSetTrebleBoostEnabled(JNIEnv *env, jobject thiz, jlong handle, jboolean enabled) {
+Java_com_thivyanstudios_hark_audio_AudioEngine_nativeSetSpeechPresenceGainDb(
+        JNIEnv *env, jobject thiz, jlong handle, jfloat gain_db) {
     auto *engine = reinterpret_cast<HarkAudioEngine *>(handle);
     if (engine) {
-        engine->setTrebleBoostEnabled(enabled);
+        engine->setSpeechPresenceGainDb(gain_db);
     }
 }
 
@@ -106,12 +108,3 @@ Java_com_thivyanstudios_hark_audio_AudioEngine_nativeGetTranscriptionLevel(JNIEn
     return 0.0f;
 }
 
-extern "C"
-JNIEXPORT jint JNICALL
-Java_com_thivyanstudios_hark_audio_AudioEngine_nativeGetSessionId(JNIEnv *env, jobject thiz, jlong handle) {
-    auto *engine = reinterpret_cast<HarkAudioEngine *>(handle);
-    if (engine) {
-        return engine->getSessionId();
-    }
-    return -1;
-}

@@ -6,7 +6,7 @@ This document details the low-latency C++ native audio engine (**HarkAudioEngine
 
 ## Engine Overview
 
-The core audio engine ([hark_audio_engine.cpp](file:///D:/Development/hark-app/app/src/main/cpp/hark_audio_engine.cpp) / [hark_audio_engine.h](file:///D:/Development/hark-app/app/src/main/cpp/hark_audio_engine.h)) is written in C++17 utilizing **Google Oboe**. It provides high-efficiency, low-latency audio capture and playback with real-time DSP filters tailored for hearing enhancement.
+The core audio engine (`app/src/main/cpp/hark_audio_engine.cpp` / `hark_audio_engine.h`) is written in C++17 using **Google Oboe**. It captures from a selectable input device, applies speech-focused DSP, and sends a mono microphone signal to shared stereo Media output. The app does not request audio focus, so Android can mix the output with other media playback.
 
 ### Key Performance Goals
 - **Ultra-low latency**: Hardware-direct AAudio/OpenSL ES performance mode (`oboe::PerformanceMode::LowLatency`).
@@ -28,16 +28,15 @@ flowchart LR
         RMS --> TX_FIFO[Transcription FifoBuffer]
     end
 
-    subgraph MAIN_PATH ["Primary Hearing Enhancement Path"]
+    subgraph MAIN_PATH ["Voice Enhancement Path"]
         CB_IN --> MAIN_FIFO[Main Audio FifoBuffer]
         MAIN_FIFO --> PRE_BUF{Pre-Buffering Check}
-        PRE_BUF -->|Buffered| TREBLE[Biquad Treble Boost]
-        TREBLE --> GAIN[Microphone Gain]
-        GAIN --> DYNAMICS{Dynamics Enabled?}
-        DYNAMICS -->|Yes| LIMITER[Soft-Knee Limiter]
-        DYNAMICS -->|No| HARD_CLIP[Clamp -1.1 to +1.1]
-        LIMITER --> OUT_STREAM[Oboe Output Stream]
-        HARD_CLIP --> OUT_STREAM
+        PRE_BUF --> HPF[90 Hz High-Pass]
+        HPF --> RNNOISE[RNNoise 480-sample Frame]
+        RNNOISE --> EQ[3.2 kHz Peaking EQ]
+        EQ --> GAIN[Microphone Gain]
+        GAIN --> LIMITER[-3 dBFS Peak Limiter]
+        LIMITER --> OUT_STREAM[Shared Stereo Media Output]
     end
 
     OUT_STREAM --> HEADSET[Hearing Aid / Headset]
@@ -45,74 +44,44 @@ flowchart LR
 
 ---
 
-## DSP Signal Processing Algorithms
+## DSP Signal Processing
 
-### 1. High-Shelf Treble Boost Filter (Biquad)
+### 1. 90 Hz High-Pass Filter
 
-High-frequency boost improves speech intelligibility by enhancing consonants (e.g., *s*, *f*, *th*, *t*) which are often difficult to hear for individuals with high-frequency hearing loss.
+The high-pass filter removes low-frequency handling and environmental rumble before denoising.
 
-- **Filter Type**: 2nd Order Biquad High-Shelf Filter
-- **Center Frequency ($f_0$)**: $3000\text{ Hz}$
-- **Gain**: $+8.0\text{ dB}$
+- **Filter Type**: 2nd Order Biquad high-pass
+- **Cutoff Frequency ($f_0$)**: $90\text{ Hz}$
+- **Q**: $0.707$
 
-#### Coefficient Equations
-Calculated dynamically based on sample rate ($f_s$):
+### 2. RNNoise
 
-$$\omega_0 = 2\pi \frac{f_0}{f_s}, \quad A = 10^{\frac{\text{gainDb}}{40}}, \quad \alpha = \frac{\sin(\omega_0)}{2}$$
+The engine compiles the upstream RNNoise v0.1.1 C implementation at a pinned commit. It processes 480-sample (10 ms) mono frames at 48 kHz. Input and output callbacks communicate through Oboe's single-producer/single-consumer FIFO; the denoiser state and frame buffers are initialized before streaming, not allocated in the callback. Noise suppression is enabled by default and can be disabled in Audio Engine settings.
 
-$$a_0 = (A + 1) - (A - 1)\cos(\omega_0) + 2\sqrt{A}\alpha$$
+### 3. Speech-Presence Peaking EQ
 
-$$b_0 = \frac{A \cdot ((A + 1) + (A - 1)\cos(\omega_0) + 2\sqrt{A}\alpha)}{a_0}$$
+- **Filter Type**: 2nd Order Biquad peaking EQ
+- **Center Frequency**: $3200\text{ Hz}$
+- **Gain**: User-adjustable from $+3$ to $+8\text{ dB}$ (default $+6\text{ dB}$)
+- **Q**: $1.0$
 
-$$b_1 = \frac{-2 A \cdot ((A - 1) + (A + 1)\cos(\omega_0))}{a_0}$$
+The coefficients are updated on the audio callback when the atomic gain setting changes; filtering is performed continuously at 48 kHz.
 
-$$b_2 = \frac{A \cdot ((A + 1) + (A - 1)\cos(\omega_0) - 2\sqrt{A}\alpha)}{a_0}$$
+### 4. -3 dBFS Peak Limiter
 
-$$a_1 = \frac{2 \cdot ((A - 1) - (A + 1)\cos(\omega_0))}{a_0}$$
+Gain reduction engages immediately on peaks (faster than 0.5 ms), releases with an 80 ms exponential time constant, and hard-clamps the final output to $10^{-3/20}$ (-3 dBFS).
+The optional Dynamics Processing setting applies the existing soft-knee stage before this always-on peak limiter.
 
-$$a_2 = \frac{(A + 1) - (A - 1)\cos(\omega_0) - 2\sqrt{A}\alpha}{a_0}$$
-
-#### Direct Form I Difference Equation
-$$y[n] = b_0 \cdot x[n] + b_1 \cdot x[n-1] + b_2 \cdot x[n-2] - a_1 \cdot y[n-1] - a_2 \cdot y[n-2]$$
-
----
-
-### 2. Dynamics Processing: Soft-Knee Limiter & Compressor
-
-To protect hearing aid users from sudden loud noises (such as clattering dishes or doors slamming), the engine applies an envelope-following soft-knee gain limiter.
-
-- **Threshold**: $0.75$ (linear amplitude)
-- **Knee Width**: $0.15$
-- **Attack Coefficient**: $0.05$ (~$0.4\text{ ms}$ attack at $48\text{ kHz}$)
-- **Release Coefficient**: $0.0005$ (~$40\text{ ms}$ release at $48\text{ kHz}$)
-
-#### Envelope Follower
-$$E[n] = \begin{cases} 
-|x[n]| \cdot \text{attack} + E[n-1] \cdot (1 - \text{attack}) & \text{if } |x[n]| > E[n-1] \\ 
-|x[n]| \cdot \text{release} + E[n-1] \cdot (1 - \text{release}) & \text{if } |x[n]| \le E[n-1] 
-\end{cases}$$
-
-#### Soft-Knee Target Gain Calculation
-$$G_{\text{target}} = \begin{cases} 
-1.0 & \text{if } E[n] \le \text{Threshold} - \frac{\text{Knee}}{2} \\ 
-\frac{\text{Threshold}}{E[n]} & \text{if } E[n] \ge \text{Threshold} + \frac{\text{Knee}}{2} \\ 
-\frac{E[n] - \frac{\left(E[n] - (\text{Threshold} - \frac{\text{Knee}}{2})\right)^2}{2 \cdot \text{Knee}}}{E[n]} & \text{otherwise (Soft Knee Region)} 
-\end{cases}$$
-
-$$y[n] = x[n] \cdot G_{\text{target}}$$
-
----
-
-### 3. Pre-Buffering & Jitter Absorption
+### 5. Pre-Buffering & Jitter Absorption
 
 Audio clocks on mobile microphones and Bluetooth output endpoints can drift slightly. To eliminate audible popping or snapping due to buffer underruns:
-1. The engine starts in `mIsBuffering = true` mode.
-2. It accumulates audio frames in `mFifoBuffer` until at least `4 * framesPerBurst` are available.
-3. If an underrun occurs during streaming (`framesRead < numFrames`), output buffers are zero-padded and pre-buffering re-engages seamlessly.
+1. The engine starts in `mIsBuffering = true` mode and waits for at least 480 input frames (and the configured prebuffer target).
+2. The output callback consumes complete 480-sample RNNoise frames from the SPSC FIFO and duplicates each processed mono sample across the stereo output channels.
+3. If a frame is unavailable, remaining output is zero-padded and pre-buffering re-engages.
 
 ---
 
-### 4. Transcription Signal Pipeline
+### 6. Transcription Signal Pipeline
 
 - Dedicated 10-second `mTranscriptionFifo` buffer independent of output streaming.
 - Applies a 10x signal boost to transcription inputs to enable speech recognition in quiet environments.
@@ -122,7 +91,7 @@ Audio clocks on mobile microphones and Bluetooth output endpoints can drift slig
 
 ## Stream Recovery & Fault Tolerance
 
-On Android, exclusive low-latency streams are torn down by the OS whenever audio routing changes (e.g., connecting a Bluetooth headset) or when the screen turns off.
+On Android, Oboe streams can be disconnected when audio routing changes (e.g., connecting a Bluetooth headset) or when the screen turns off.
 
 ```mermaid
 sequenceDiagram
@@ -149,5 +118,5 @@ sequenceDiagram
 ## Java/Kotlin Fallback Engine
 
 If the native C++ library fails to load or cannot initialize hardware streams on non-standard Android hardware, [AudioEngine.kt](file:///D:/Development/hark-app/app/src/main/java/com/thivyanstudios/hark/audio/AudioEngine.kt) automatically falls back to:
-- **[AudioStreamManager.kt](file:///D:/Development/hark-app/app/src/main/java/com/thivyanstudios/hark/audio/stream/AudioStreamManager.kt)**: Manages Java `AudioRecord` (Input) and `AudioTrack` (Output) initialized with `USAGE_ASSISTANCE_ACCESSIBILITY` and `PERFORMANCE_MODE_LOW_LATENCY`.
+- **AudioStreamManager.kt**: Manages Java `AudioRecord` (Input) and `AudioTrack` (Output) for the fallback path.
 - **[DefaultAudioProcessor.kt](file:///D:/Development/hark-app/app/src/main/java/com/thivyanstudios/hark/audio/processor/DefaultAudioProcessor.kt)**: Pure Kotlin PCM float processing fallback.

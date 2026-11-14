@@ -2,12 +2,15 @@ package com.thivyanstudios.hark.ui.viewmodel
 
 import android.app.Application
 import android.content.ContentResolver
+import android.content.Context
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.PowerManager
 import app.cash.turbine.test
 import com.thivyanstudios.hark.audio.AudioEngine
 import com.thivyanstudios.hark.audio.model.AudioEngineEvent
+import com.thivyanstudios.hark.data.STTModelManager
 import com.thivyanstudios.hark.data.UserPreferencesRepository
 import com.thivyanstudios.hark.data.model.UserPreferences
 import com.thivyanstudios.hark.util.SystemSettingsProvider
@@ -36,6 +39,7 @@ class SettingsViewModelTest {
     private val testDispatcher = UnconfinedTestDispatcher()
 
     private lateinit var userPreferencesRepository: UserPreferencesRepository
+    private lateinit var sttModelManager: STTModelManager
     private lateinit var audioEngine: AudioEngine
     private lateinit var application: Application
     private lateinit var systemSettingsProvider: SystemSettingsProvider
@@ -51,6 +55,11 @@ class SettingsViewModelTest {
 
         userPreferencesRepository = mock {
             on { userPreferencesFlow } doReturn prefsFlow
+        }
+        sttModelManager = mock {
+            on { downloadProgress } doReturn MutableStateFlow(emptyMap())
+            on { modelStoreUpdateTrigger } doReturn MutableStateFlow(0L)
+            on { availableModels } doReturn emptyList()
         }
         audioEngine = mock {
             on { events } doReturn audioEngineEvents
@@ -71,11 +80,13 @@ class SettingsViewModelTest {
             on { getPackageManager() } doReturn packageManager
             on { getContentResolver() } doReturn contentResolver
             on { getString(anyInt(), anyString(), anyString()) } doReturn "Release-Candidate 1.0.0"
+            on { getSystemService(Context.POWER_SERVICE) } doReturn mock<PowerManager>()
         }
 
         // Inject the testDispatcher as the ioDispatcher
         viewModel = SettingsViewModel(
             userPreferencesRepository, 
+            sttModelManager,
             audioEngine, 
             application, 
             systemSettingsProvider,
@@ -113,6 +124,7 @@ class SettingsViewModelTest {
         // Re-init with the testDispatcher to trigger the check on startup synchronously
         SettingsViewModel(
             userPreferencesRepository, 
+            sttModelManager,
             audioEngine, 
             application, 
             systemSettingsProvider,

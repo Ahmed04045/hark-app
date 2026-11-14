@@ -9,10 +9,13 @@ import kotlinx.coroutines.flow.StateFlow
 interface AudioStreamingController {
     val isStreaming: StateFlow<Boolean>
     val hearingAidConnected: StateFlow<Boolean>
+    val audioInputDevices: StateFlow<List<AudioInputDevice>>
+    val selectedInputDeviceId: StateFlow<Int?>
     val transcription: StateFlow<String>
     val audioLevel: StateFlow<Float>
 
     fun startStreaming()
     fun stopStreaming()
     fun clearTranscription()
+    fun selectInputDevice(deviceId: Int)
 }

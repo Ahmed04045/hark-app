@@ -28,6 +28,7 @@ import com.k2fsa.sherpa.onnx.OnlineStream
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -60,6 +61,12 @@ class AudioStreamingService : Service(), AudioStreamingController {
     private val _audioLevel = MutableStateFlow(0f)
     override val audioLevel = _audioLevel.asStateFlow()
 
+    private val _audioInputDevices = MutableStateFlow<List<AudioInputDevice>>(emptyList())
+    override val audioInputDevices = _audioInputDevices.asStateFlow()
+
+    private val _selectedInputDeviceId = MutableStateFlow<Int?>(null)
+    override val selectedInputDeviceId = _selectedInputDeviceId.asStateFlow()
+
     private val fullTranscript = StringBuilder()
     private var lastTranscriptionTime = 0L
 
@@ -86,6 +93,7 @@ class AudioStreamingService : Service(), AudioStreamingController {
     lateinit var ioDispatcher: CoroutineDispatcher
 
     private lateinit var serviceScope: CoroutineScope
+    private var stopJob: Job? = null
     private var enableBluetoothHeadsetSupport = false
     private var lastTranscriptModeEnabled: Boolean? = null
     private var lastSelectedModelId: String? = null
@@ -93,38 +101,12 @@ class AudioStreamingService : Service(), AudioStreamingController {
     private val _hearingAidConnected = MutableStateFlow(false)
     override val hearingAidConnected = _hearingAidConnected.asStateFlow()
 
-    private var pausedByFocusLoss = false
-
-    private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
-        when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                HarkLog.i(TAG, "Audio focus lost permanently, stopping streaming")
-                stopStreaming()
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                HarkLog.i(TAG, "Audio focus lost transiently, pausing streaming")
-                pauseStreaming()
-            }
-            AudioManager.AUDIOFOCUS_GAIN -> {
-                HarkLog.i(TAG, "Audio focus regained, resuming streaming")
-                resumeStreamingAfterFocusGain()
-            }
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                HarkLog.i(TAG, "Audio focus lost (duckable), continuing streaming")
-                // We could lower our output volume here if we were playing audio,
-                // but since we are mainly recording/transcribing, we continue.
-            }
-        }
-    }
-
-    private var audioFocusRequest: AudioFocusRequest? = null
-
     private val audioDeviceCallback = object : AudioDeviceCallback() {
         @RequiresPermission(allOf = [Manifest.permission.RECORD_AUDIO, Manifest.permission.BLUETOOTH_CONNECT])
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
             HarkLog.i(TAG, "Audio devices added")
             updateHearingAidStatus()
-            if (_isStreaming.value && hasRequiredPermissions()) {
+            if (refreshInputDevices() && _isStreaming.value && hasRequiredPermissions()) {
                 restartStreaming()
             }
         }
@@ -133,12 +115,12 @@ class AudioStreamingService : Service(), AudioStreamingController {
         override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
             HarkLog.i(TAG, "Audio devices removed")
             updateHearingAidStatus()
-            
-            val isTargetDeviceRemoved = removedDevices?.any { isCompatibleDevice(it.type) } == true
-            if (isTargetDeviceRemoved) {
-                HarkLog.i(TAG, "Compatible device removed, stopping streaming")
-                stopStreaming()
-            } else if (_isStreaming.value && hasRequiredPermissions()) {
+            val selectedDeviceRemoved = removedDevices?.any {
+                it.id == _selectedInputDeviceId.value
+            } == true
+            refreshInputDevices()
+            if ((selectedDeviceRemoved || removedDevices?.isNotEmpty() == true) &&
+                _isStreaming.value && hasRequiredPermissions()) {
                 restartStreaming()
             }
         }
@@ -220,7 +202,7 @@ class AudioStreamingService : Service(), AudioStreamingController {
                 audioEngine.setMicrophoneGain(gain)
                 audioEngine.setNoiseSuppressionEnabled(prefs.noiseSuppressionEnabled)
                 audioEngine.setDynamicsProcessingEnabled(prefs.dynamicsProcessingEnabled)
-                audioEngine.setTrebleBoostEnabled(prefs.trebleBoostEnabled)
+                audioEngine.setSpeechPresenceGainDb(prefs.speechPresenceGainDb)
                 audioEngine.setTranscriptModeEnabled(prefs.transcriptModeEnabled)
             }
             .launchIn(serviceScope)
@@ -259,6 +241,7 @@ class AudioStreamingService : Service(), AudioStreamingController {
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, Handler(Looper.getMainLooper()))
         updateHearingAidStatus()
+        refreshInputDevices()
     }
 
     private fun bluetoothSupportChange(newEnableSupport: Boolean) {
@@ -277,12 +260,54 @@ class AudioStreamingService : Service(), AudioStreamingController {
         _hearingAidConnected.value = isConnected
     }
 
+    private fun refreshInputDevices(): Boolean {
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            .mapNotNull { device ->
+                val label = when (device.type) {
+                    AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Phone Built-in Mic"
+                    AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired Headset Mic"
+                    AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth Headset Mic"
+                    AudioDeviceInfo.TYPE_USB_HEADSET -> "USB Headset Mic"
+                    else -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                        device.type == AudioDeviceInfo.TYPE_BLE_HEADSET) {
+                        "Bluetooth Headset Mic"
+                    } else {
+                        null
+                    }
+                }
+                label?.let { AudioInputDevice(device.id, it) }
+            }
+            .distinctBy { it.id }
+            .sortedBy { if (it.label == "Phone Built-in Mic") 0 else 1 }
+
+        val previousId = _selectedInputDeviceId.value
+        val nextId = previousId?.takeIf { id -> devices.any { it.id == id } }
+            ?: devices.firstOrNull { it.label == "Phone Built-in Mic" }?.id
+            ?: devices.firstOrNull()?.id
+        _audioInputDevices.value = devices
+        _selectedInputDeviceId.value = nextId
+        return previousId != nextId
+    }
+
+    override fun selectInputDevice(deviceId: Int) {
+        if (_audioInputDevices.value.none { it.id == deviceId }) return
+        if (_selectedInputDeviceId.value == deviceId) return
+        _selectedInputDeviceId.value = deviceId
+        if (_isStreaming.value && hasRequiredPermissions()) {
+            restartStreaming()
+        }
+    }
+
     @RequiresPermission(allOf = [Manifest.permission.RECORD_AUDIO, Manifest.permission.BLUETOOTH_CONNECT])
     private fun restartStreaming() {
         HarkLog.i(TAG, "Restarting streaming")
         if (_isStreaming.value) {
             stopStreaming()
-            startStreaming()
+            serviceScope.launch {
+                stopJob?.join()
+                startStreaming()
+            }
         }
     }
 
@@ -291,11 +316,6 @@ class AudioStreamingService : Service(), AudioStreamingController {
     override fun startStreaming() {
         if (_isStreaming.value) return
 
-        if (!requestAudioFocus()) {
-            HarkLog.w(TAG, "Could not acquire audio focus, aborting start")
-            return
-        }
-        
         HarkLog.i(TAG, "Starting streaming")
         _isStreaming.value = true
 
@@ -321,8 +341,7 @@ class AudioStreamingService : Service(), AudioStreamingController {
                 withContext(ioDispatcher) {
                     // Initialize Sherpa before starting engine
                     prepareSherpa()
-                    updateAudioRouting()
-                    audioEngine.start()
+                    audioEngine.start(_selectedInputDeviceId.value ?: -1)
                     startTranscriptionLoop()
                     startLevelMonitoringLoop()
                 }
@@ -454,38 +473,11 @@ class AudioStreamingService : Service(), AudioStreamingController {
         }
     }
 
-    // Transient focus loss (call, alarm, assistant): keep the session alive so we can
-    // resume when focus returns. The foreground notification and wake lock stay held.
-    private fun pauseStreaming() {
-        if (!_isStreaming.value || pausedByFocusLoss) return
-        pausedByFocusLoss = true
-        _audioLevel.value = 0f
-        serviceScope.launch {
-            withContext(ioDispatcher) {
-                audioEngine.stop()
-            }
-        }
-    }
-
-    private fun resumeStreamingAfterFocusGain() {
-        if (!pausedByFocusLoss) return
-        pausedByFocusLoss = false
-        if (!_isStreaming.value) return
-        serviceScope.launch {
-            withContext(ioDispatcher) {
-                audioEngine.start()
-            }
-        }
-    }
-
     override fun stopStreaming() {
         if (!_isStreaming.value) return
 
         HarkLog.i(TAG, "Stopping streaming")
         _isStreaming.value = false
-        pausedByFocusLoss = false
-        clearAudioRouting()
-        abandonAudioFocus()
         
         fullTranscript.setLength(0)
         _transcription.value = ""
@@ -502,50 +494,13 @@ class AudioStreamingService : Service(), AudioStreamingController {
             stopForeground(true)
         }
 
-        serviceScope.launch {
+        stopJob = serviceScope.launch {
             withContext(ioDispatcher) {
                 audioEngine.stop()
                 recognizer?.release()
                 recognizer = null
                 sherpaStream = null
             }
-        }
-    }
-
-    private fun requestAudioFocus(): Boolean {
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        val attributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .build()
-        
-        audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
-            .setAudioAttributes(attributes)
-            .setAcceptsDelayedFocusGain(false)
-            .setOnAudioFocusChangeListener(audioFocusChangeListener)
-            .build()
-        
-        val result = audioManager.requestAudioFocus(audioFocusRequest!!)
-        return result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-    }
-
-    private fun abandonAudioFocus() {
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
-    }
-
-    private fun updateAudioRouting() {
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        // Reset to normal mode as the BT mic feature has been removed
-        audioManager.mode = AudioManager.MODE_NORMAL
-    }
-
-    private fun clearAudioRouting() {
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        audioManager.mode = AudioManager.MODE_NORMAL
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            audioManager.clearCommunicationDevice()
         }
     }
 

@@ -1,5 +1,7 @@
 package com.thivyanstudios.hark.ui
 
+import com.thivyanstudios.hark.service.AudioInputDevice
+
 data class MainUiState(
     val isStreaming: Boolean = false,
     val hearingAidConnected: Boolean = false,
@@ -9,6 +11,8 @@ data class MainUiState(
     val transcriptModeEnabled: Boolean = false,
     val transcription: String = "",
     val audioLevel: Float = 0f, // Normalized 0.0 to 1.0
+    val audioInputDevices: List<AudioInputDevice> = emptyList(),
+    val selectedInputDeviceId: Int? = null,
     val isLoading: Boolean = true,
     val isModelAvailable: Boolean = false,
     val history: List<com.thivyanstudios.hark.data.local.TranscriptionEntity> = emptyList(),

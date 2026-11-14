@@ -191,14 +191,45 @@ fun SettingsScreen(
                     enabled = uiState.isDynamicsProcessingSupported
                 )
 
-                SettingsSwitchRow(
-                    text = stringResource(R.string.settings_treble_boost),
-                    icon = Icons.Default.RecordVoiceOver,
-                    checked = uiState.trebleBoostEnabled,
-                    onCheckedChange = settingsViewModel::setTrebleBoostEnabled,
-                    hapticFeedbackEnabled = uiState.hapticFeedbackEnabled
-                )
-                
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Column(modifier = Modifier.padding(horizontal = 4.dp)) {
+                    var presenceGain by remember(uiState.speechPresenceGainDb) {
+                        mutableFloatStateOf(uiState.speechPresenceGainDb)
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.RecordVoiceOver,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            HarkText(text = "Speech presence (3.2 kHz)")
+                        }
+                        HarkText(
+                            text = "${presenceGain.toInt()} dB",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Slider(
+                        value = presenceGain,
+                        onValueChange = { presenceGain = it },
+                        valueRange = 3.0f..8.0f,
+                        steps = 4,
+                        onValueChangeFinished = {
+                            settingsViewModel.setSpeechPresenceGainDb(presenceGain)
+                            if (uiState.hapticFeedbackEnabled) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        }
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(16.dp))
                 
                 // Microphone Gain Slider

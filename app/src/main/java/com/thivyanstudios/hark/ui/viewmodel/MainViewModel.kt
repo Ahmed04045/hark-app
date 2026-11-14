@@ -64,6 +64,8 @@ class MainViewModel @Inject constructor(
                     service.hearingAidConnected,
                     service.transcription,
                     service.audioLevel,
+                    service.audioInputDevices,
+                    service.selectedInputDeviceId,
                     userPreferencesRepository.userPreferencesFlow,
                     transcriptionRepository.allTranscriptions,
                     sttModelManager.modelStoreUpdateTrigger,
@@ -74,12 +76,15 @@ class MainViewModel @Inject constructor(
                     val hearingAidConnected = args[1] as Boolean
                     val transcription = args[2] as String
                     val audioLevel = args[3] as Float
-                    val prefs = args[4] as UserPreferences
                     @Suppress("UNCHECKED_CAST")
-                    val history = args[5] as List<com.thivyanstudios.hark.data.local.TranscriptionEntity>
-                    // args[6] is modelStoreUpdateTrigger
-                    // args[7] is refreshTrigger
-                    val permissionsHandled = args[8] as Boolean
+                    val audioInputDevices = args[4] as List<com.thivyanstudios.hark.service.AudioInputDevice>
+                    val selectedInputDeviceId = args[5] as Int?
+                    val prefs = args[6] as UserPreferences
+                    @Suppress("UNCHECKED_CAST")
+                    val history = args[7] as List<com.thivyanstudios.hark.data.local.TranscriptionEntity>
+                    // args[8] is modelStoreUpdateTrigger
+                    // args[9] is refreshTrigger
+                    val permissionsHandled = args[10] as Boolean
 
                     val isModelAvailable = sttModelManager.availableModels.any { 
                         sttModelManager.isModelDownloaded(it) 
@@ -97,6 +102,8 @@ class MainViewModel @Inject constructor(
                         transcriptModeEnabled = prefs.transcriptModeEnabled,
                         transcription = transcription,
                         audioLevel = audioLevel,
+                        audioInputDevices = audioInputDevices,
+                        selectedInputDeviceId = selectedInputDeviceId,
                         isLoading = false,
                         isModelAvailable = isModelAvailable,
                         history = history,
@@ -161,11 +168,16 @@ class MainViewModel @Inject constructor(
                     viewModelScope.launch {
                         _snackbarChannel.send(connectHearingAidMessage)
                     }
+
                 }
             }
         } else {
             HarkLog.e("MainViewModel", "Toggle streaming failed: Service is null")
         }
+    }
+
+    fun selectInputDevice(deviceId: Int) {
+        audioServiceManager.service.value?.selectInputDevice(deviceId)
     }
 
     fun showPermissionsRequiredMessage(message: String) {

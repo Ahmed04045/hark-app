@@ -9,6 +9,8 @@
 #include <vector>
 #include <thread>
 
+struct DenoiseState;
+
 namespace oboe {
     class FifoBuffer;
 }
@@ -18,18 +20,17 @@ public:
     HarkAudioEngine();
     ~HarkAudioEngine() override;
 
-    bool start(int32_t sampleRate, int32_t framesPerBurst);
+    bool start(int32_t sampleRate, int32_t framesPerBurst, int32_t inputDeviceId);
     void stop();
 
     int32_t readTranscriptionData(float *target, int32_t numFrames);
     float getTranscriptionLevel();
-    int32_t getSessionId();
 
     void setMicrophoneGain(float gain);
     void setNoiseSuppressionEnabled(bool enabled);
     void setDynamicsProcessingEnabled(bool enabled);
     void setTranscriptModeEnabled(bool enabled);
-    void setTrebleBoostEnabled(bool enabled);
+    void setSpeechPresenceGainDb(float gainDb);
 
     // From oboe::AudioStreamDataCallback
     oboe::DataCallbackResult onAudioReady(
@@ -49,43 +50,66 @@ private:
 
     // Use atomic for thread-safe access from audio thread without locking
     std::atomic<float> mGain{1.0f};
-    std::atomic<bool> mIsNoiseSuppressionEnabled{false};
+    std::atomic<bool> mIsNoiseSuppressionEnabled{true};
     std::atomic<bool> mIsDynamicsProcessingEnabled{false};
     std::atomic<bool> mIsTranscriptModeEnabled{false};
-    std::atomic<bool> mIsTrebleBoostEnabled{false};
 
     // Live audio level for transcription gating/visuals
     std::atomic<float> mTranscriptionLevel{0.0f};
 
     // Processing state (only accessed on audio thread)
     float mEnvelope = 0.0f;
-    float mPrevInput = 0.0f;
-    float mPrevOutput = 0.0f;
+    struct Biquad {
+        float b0 = 1.0f;
+        float b1 = 0.0f;
+        float b2 = 0.0f;
+        float a1 = 0.0f;
+        float a2 = 0.0f;
+        float x1 = 0.0f;
+        float x2 = 0.0f;
+        float y1 = 0.0f;
+        float y2 = 0.0f;
 
-    // Treble boost filter state (Biquad)
-    float mX1 = 0, mX2 = 0, mY1 = 0, mY2 = 0;
-    float mB0 = 1, mB1 = 0, mB2 = 0, mA1 = 0, mA2 = 0;
+        float process(float input);
+        void reset();
+    };
+
+    Biquad mHighPass;
+    Biquad mSpeechPresenceEq;
+    std::atomic<float> mSpeechPresenceGainDb{6.0f};
+    float mActiveSpeechPresenceGainDb = -1.0f;
+
+    static constexpr int32_t kRnnoiseFrameSize = 480;
+    DenoiseState *mRnnoiseState = nullptr;
+    float mRnnoiseInput[kRnnoiseFrameSize]{};
+    float mRnnoiseScratch[kRnnoiseFrameSize]{};
+    float mRnnoiseOutput[kRnnoiseFrameSize]{};
+    int32_t mRnnoiseOutputOffset = kRnnoiseFrameSize;
+    float mLimiterGain = 1.0f;
+    float mLimiterReleaseCoefficient = 0.0f;
 
     bool mIsBuffering = true;
 
     std::mutex mStreamLock;
 
-    // Stream restart on disconnect (screen-off / route changes tear down
-    // exclusive low-latency streams; they must be reopened, see onErrorAfterClose)
+    // Stream restart on disconnect (see onErrorAfterClose).
     std::atomic<bool> mShouldBeStreaming{false};
     std::atomic<bool> mRestartPending{false};
     std::thread mRestartThread;
     std::mutex mRestartThreadLock;
     int32_t mFramesPerBurst = 192;
+    int32_t mInputDeviceId = -1;
 
     bool openStreamsLocked();
     void restartStreams();
     void joinRestartThread();
 
-    void updateTrebleBoostCoefficients(int32_t sampleRate);
+    void updateHighPassCoefficients(int32_t sampleRate);
+    void updateSpeechPresenceCoefficients(int32_t sampleRate, float gainDb);
     void closeStreams();
-    float applyTrebleBoost(float input);
+    void processRnnoiseFrame(bool noiseSuppressionEnabled, bool dynamicsEnabled, float gain);
     float applySoftKneeLimiter(float input);
+    float applyPeakLimiter(float input);
 
     // Resampling for transcription
     void pushToTranscriptionFifo(const float* data, int32_t numFrames);

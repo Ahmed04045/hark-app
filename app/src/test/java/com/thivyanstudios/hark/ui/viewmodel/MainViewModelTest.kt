@@ -1,7 +1,11 @@
 package com.thivyanstudios.hark.ui.viewmodel
 
 import app.cash.turbine.test
+import android.content.Context
+import android.os.PowerManager
 import com.thivyanstudios.hark.audio.AudioEngine
+import com.thivyanstudios.hark.data.STTModelManager
+import com.thivyanstudios.hark.data.TranscriptionRepository
 import com.thivyanstudios.hark.data.UserPreferencesRepository
 import com.thivyanstudios.hark.data.model.UserPreferences
 import com.thivyanstudios.hark.service.AudioServiceManager
@@ -30,12 +34,24 @@ class MainViewModelTest {
     
     private lateinit var audioServiceManager: AudioServiceManager
     private lateinit var userPreferencesRepository: UserPreferencesRepository
+    private lateinit var transcriptionRepository: TranscriptionRepository
+    private lateinit var sttModelManager: STTModelManager
     private lateinit var audioEngine: AudioEngine
     private lateinit var viewModel: MainViewModel
 
     private val serviceFlow = MutableStateFlow<AudioStreamingController?>(null)
     private val prefsFlow = MutableStateFlow(UserPreferences())
     private val errorEvents = MutableSharedFlow<String>()
+
+    private fun mockService(isStreamingValue: Boolean, hearingAidConnectedValue: Boolean) =
+        mock<AudioStreamingController> {
+            on { isStreaming } doReturn MutableStateFlow(isStreamingValue)
+            on { hearingAidConnected } doReturn MutableStateFlow(hearingAidConnectedValue)
+            on { transcription } doReturn MutableStateFlow("")
+            on { audioLevel } doReturn MutableStateFlow(0f)
+            on { audioInputDevices } doReturn MutableStateFlow(emptyList())
+            on { selectedInputDeviceId } doReturn MutableStateFlow(null)
+        }
 
     @Before
     fun setup() {
@@ -47,11 +63,28 @@ class MainViewModelTest {
         userPreferencesRepository = mock {
             on { userPreferencesFlow } doReturn prefsFlow
         }
+        transcriptionRepository = mock {
+            on { allTranscriptions } doReturn MutableStateFlow(emptyList())
+        }
         audioEngine = mock {
             on { errorEvents } doReturn errorEvents
         }
+        sttModelManager = mock {
+            on { modelStoreUpdateTrigger } doReturn MutableStateFlow(0L)
+            on { availableModels } doReturn emptyList()
+        }
+        val context = mock<Context> {
+            on { getSystemService(Context.POWER_SERVICE) } doReturn mock<PowerManager>()
+        }
         
-        viewModel = MainViewModel(audioServiceManager, userPreferencesRepository, audioEngine)
+        viewModel = MainViewModel(
+            context,
+            audioServiceManager,
+            userPreferencesRepository,
+            transcriptionRepository,
+            sttModelManager,
+            audioEngine
+        )
     }
 
     @After
@@ -61,9 +94,7 @@ class MainViewModelTest {
 
     @Test
     fun `toggleStreaming stops streaming if already streaming`() = runTest {
-        val mockService = mock<AudioStreamingController> {
-            on { isStreaming } doReturn MutableStateFlow(true)
-        }
+        val mockService = mockService(true, false)
         serviceFlow.value = mockService
         
         viewModel.toggleStreaming("Connect Message")
@@ -73,10 +104,7 @@ class MainViewModelTest {
 
     @Test
     fun `toggleStreaming starts streaming if not streaming and hearing aid connected`() = runTest {
-        val mockService = mock<AudioStreamingController> {
-            on { isStreaming } doReturn MutableStateFlow(false)
-            on { hearingAidConnected } doReturn MutableStateFlow(true)
-        }
+        val mockService = mockService(false, true)
         serviceFlow.value = mockService
         
         viewModel.toggleStreaming("Connect Message")
@@ -86,10 +114,7 @@ class MainViewModelTest {
 
     @Test
     fun `toggleStreaming starts streaming if not streaming and bypass is enabled even if not connected`() = runTest {
-        val mockService = mock<AudioStreamingController> {
-            on { isStreaming } doReturn MutableStateFlow(false)
-            on { hearingAidConnected } doReturn MutableStateFlow(false)
-        }
+        val mockService = mockService(false, false)
         serviceFlow.value = mockService
         
         // Use turbine to wait for the UI state to actually reflect the preference change
@@ -111,10 +136,7 @@ class MainViewModelTest {
 
     @Test
     fun `toggleStreaming shows error and does not start if not connected and no bypass`() = runTest {
-        val mockService = mock<AudioStreamingController> {
-            on { isStreaming } doReturn MutableStateFlow(false)
-            on { hearingAidConnected } doReturn MutableStateFlow(false)
-        }
+        val mockService = mockService(false, false)
         serviceFlow.value = mockService
         
         // Ensure bypass is disabled
@@ -130,10 +152,7 @@ class MainViewModelTest {
 
     @Test
     fun `uiState correctly merges service and preference states`() = runTest {
-        val mockService = mock<AudioStreamingController> {
-            on { isStreaming } doReturn MutableStateFlow(true)
-            on { hearingAidConnected } doReturn MutableStateFlow(false)
-        }
+        val mockService = mockService(true, false)
         
         viewModel.uiState.test {
             awaitItem() // Initial empty state

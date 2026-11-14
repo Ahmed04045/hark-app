@@ -2,7 +2,6 @@ package com.thivyanstudios.hark.audio
 
 import android.content.Context
 import android.media.AudioManager
-import android.media.audiofx.NoiseSuppressor
 import com.thivyanstudios.hark.audio.model.AudioEngineEvent
 import com.thivyanstudios.hark.audio.model.AudioProcessingConfig
 import com.thivyanstudios.hark.audio.processor.AudioProcessor
@@ -21,7 +20,7 @@ import javax.inject.Singleton
 
 /**
  * Orchestrates audio processing between Native (Oboe/C++) and Java/Kotlin fallbacks.
- * Sherpa-ONNX is managed at the Service level using the native FIFO provided here.
+ * The native engine provides the low-latency Oboe processing path.
  */
 @Singleton
 class AudioEngine @Inject constructor(
@@ -35,7 +34,6 @@ class AudioEngine @Inject constructor(
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var isNativeLibraryLoaded = false
-    private var noiseSuppressor: NoiseSuppressor? = null
     
     // Native handle to the C++ HarkAudioEngine instance
     private var nativeHandle: Long = 0
@@ -60,7 +58,7 @@ class AudioEngine @Inject constructor(
         }
     }
 
-    fun start() {
+    fun start(inputDeviceId: Int = -1) {
         if (_isStreaming.value) return
         
         if (!isNativeLibraryLoaded) {
@@ -80,13 +78,7 @@ class AudioEngine @Inject constructor(
         var success = false
         if (isNativeLibraryLoaded && nativeHandle != 0L) {
             try {
-                success = nativeStart(nativeHandle, sampleRate, framesPerBurst)
-                if (success) {
-                    val sessionId = nativeGetSessionId(nativeHandle)
-                    if (sessionId != -1) {
-                        setupNoiseSuppressor(sessionId)
-                    }
-                }
+                success = nativeStart(nativeHandle, sampleRate, framesPerBurst, inputDeviceId)
             } catch (_: UnsatisfiedLinkError) {
                 HarkLog.e(TAG, "Native start failed")
             }
@@ -100,7 +92,7 @@ class AudioEngine @Inject constructor(
     }
 
     fun getOptimalSampleRate(): Int {
-        return audioManager.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: 48000
+        return RNNOISE_SAMPLE_RATE
     }
 
     fun getOptimalFramesPerBurst(): Int {
@@ -110,8 +102,6 @@ class AudioEngine @Inject constructor(
     fun stop() {
         if (!_isStreaming.value) return
         _isStreaming.value = false
-        
-        releaseNoiseSuppressor()
         
         if (isNativeLibraryLoaded && nativeHandle != 0L) {
             try {
@@ -142,9 +132,6 @@ class AudioEngine @Inject constructor(
     fun setNoiseSuppressionEnabled(enabled: Boolean) {
         currentConfig = currentConfig.copy(noiseSuppressionEnabled = enabled)
         applyToNative { nativeSetNoiseSuppressionEnabled(it, enabled) }
-        
-        noiseSuppressor?.enabled = enabled
-        
         streamManager.updateConfig(currentConfig)
     }
     
@@ -158,29 +145,8 @@ class AudioEngine @Inject constructor(
         applyToNative { nativeSetTranscriptModeEnabled(it, enabled) }
     }
 
-    fun setTrebleBoostEnabled(enabled: Boolean) {
-        applyToNative { nativeSetTrebleBoostEnabled(it, enabled) }
-    }
-
-    private fun setupNoiseSuppressor(sessionId: Int) {
-        if (NoiseSuppressor.isAvailable()) {
-            try {
-                releaseNoiseSuppressor()
-                noiseSuppressor = NoiseSuppressor.create(sessionId).apply {
-                    enabled = currentConfig.noiseSuppressionEnabled
-                }
-                HarkLog.i(TAG, "System NoiseSuppressor initialized on session $sessionId")
-            } catch (e: Exception) {
-                HarkLog.e(TAG, "Failed to create NoiseSuppressor", e)
-            }
-        } else {
-            HarkLog.w(TAG, "System NoiseSuppressor is not available on this device")
-        }
-    }
-
-    private fun releaseNoiseSuppressor() {
-        noiseSuppressor?.release()
-        noiseSuppressor = null
+    fun setSpeechPresenceGainDb(gainDb: Float) {
+        applyToNative { nativeSetSpeechPresenceGainDb(it, gainDb.coerceIn(3.0f, 8.0f)) }
     }
 
     // --- Transcription Data Access ---
@@ -213,18 +179,17 @@ class AudioEngine @Inject constructor(
 
     private external fun nativeCreate(): Long
     private external fun nativeDelete(handle: Long)
-    private external fun nativeStart(handle: Long, sampleRate: Int, framesPerBurst: Int): Boolean
+    private external fun nativeStart(handle: Long, sampleRate: Int, framesPerBurst: Int, inputDeviceId: Int): Boolean
     private external fun nativeStop(handle: Long)
     private external fun nativeSetMicrophoneGain(handle: Long, gain: Float)
     private external fun nativeSetNoiseSuppressionEnabled(handle: Long, enabled: Boolean)
     private external fun nativeSetDynamicsProcessingEnabled(handle: Long, enabled: Boolean)
     private external fun nativeSetTranscriptModeEnabled(handle: Long, enabled: Boolean)
-    private external fun nativeSetTrebleBoostEnabled(handle: Long, enabled: Boolean)
+    private external fun nativeSetSpeechPresenceGainDb(handle: Long, gainDb: Float)
     private external fun nativeReadTranscriptionData(handle: Long, target: FloatArray, offset: Int, numFrames: Int): Int
     private external fun nativeGetTranscriptionLevel(handle: Long): Float
-    private external fun nativeGetSessionId(handle: Long): Int
-
     companion object {
         private const val TAG = "AudioEngine"
+        private const val RNNOISE_SAMPLE_RATE = 48000
     }
 }

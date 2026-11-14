@@ -1,164 +1,79 @@
-# HARK – Hearing Aid Relay Kit
+# HARK — Hearing Aid Relay Kit
 
-[![Android SDK](https://img.shields.io/badge/API-28%2B-blue.svg)](https://developer.android.com/about/versions/pie)
-[![Kotlin](https://img.shields.io/badge/Language-Kotlin%20%2F%20C%2B%2B-purple.svg)](https://kotlinlang.org/)
-[![UI](https://img.shields.io/badge/UI-Jetpack%20Compose%20M3-green.svg)](https://developer.android.com/jetpack/compose)
-[![License](https://img.shields.io/badge/License-BSD%203--Clause-lightgrey.svg)](LICENSE)
+HARK is an Android app for relaying microphone audio to compatible hearing devices or headsets, with optional on-device speech transcription. It is built with Kotlin, Jetpack Compose, and a native C++ audio engine.
 
-**HARK** turns your Android phone into an ultra-low-latency remote microphone and real-time offline transcription streamer. It streams enhanced, processed speech directly to your hearing aids or headsets while rendering live, privacy-first on-device captions.
+> HARK is an assistive listening tool, not a medical device. Audio quality, latency, and device compatibility depend on your phone, Android version, and connected audio equipment.
 
-Designed to replace expensive proprietary "table mic" hardware accessories, HARK makes assistive listening and clear classroom or meeting speech accessible to everyone with a single tap.
+## Features
 
----
+- Live microphone audio relay with configurable audio processing.
+- Optional live English transcription using a streaming Sherpa-ONNX model on the device.
+- Transcript-only mode for captions without audio output.
+- Local transcription history and user preferences.
+- Audio routing for compatible hearing aids, Bluetooth devices, and wired or USB audio equipment. Available routes vary by device and Android version.
+- A Kotlin audio fallback for devices where the native audio engine cannot be used.
 
-## Features & Highlights
+## Requirements
 
-- **Ultra-Low Latency Audio Relay**: Native C++ audio engine built on [Google Oboe](https://github.com/google/oboe) for minimal delay between spoken voice and hearing aids.
-- **Hearing Aid & Bluetooth Support**: Built specifically for **ASHA (Audio Streaming for Hearing Aids)** devices, with optional support for A2DP, SCO, and BLE headsets.
-- **Custom DSP Audio Enhancement**:
-  - **Bi-quad High-Shelf Treble Boost** (+8dB @ 3kHz) to enhance consonant clarity for high-frequency hearing loss.
-  - **Soft-Knee Dynamic Range Limiter & Compressor** to prevent sudden loud impulse noises from damaging ears.
-  - **Hardware Noise Suppression** integration.
-- **100% Offline Real-Time Transcription**: Powered by **Sherpa-ONNX** with Zipformer streaming transducer models. No cloud APIs, zero network latency, complete privacy.
-- **Transcript-Only Mode**: Option to mute audio relay while keeping live captions running for quiet environments.
-- **Modern Material 3 UI**: Full Jetpack Compose interface featuring live visualizers, adjustable caption font size, dark/light themes, and saved history.
-- **Fault Tolerant**: Automatic background stream recovery on audio route changes or screen-off events.
+- Android 9 (API 28) or later.
+- A recent Android Studio installation.
+- JDK 17 or later.
+- Android SDK Platform 37, Android NDK, and CMake 3.22.1 or later.
 
----
+For the best audio experience, test on a physical Android device with your intended hearing aids or headset. Emulator audio routing does not represent every real-device configuration.
 
-## System Architecture Overview
+## Build and run
 
-HARK uses a high-performance multi-tier architecture connecting native C++ DSP audio processing, Android foreground service management, offline ML inferencing, and modern Jetpack Compose state management.
+Clone the repository and open it in Android Studio:
 
-```mermaid
-flowchart TD
-    subgraph UI ["Jetpack Compose UI Layer"]
-        HomeScreen["HomeScreen"]
-        TranscribeScreen["TranscribeScreen"]
-        HistoryScreen["HistoryScreen"]
-        SettingsScreen["SettingsScreen"]
-    end
-
-    subgraph Core ["Foreground Service & Audio Coordinator"]
-        Service["AudioStreamingService"]
-        AudioEngine["AudioEngine (Kotlin)"]
-        Service --> AudioEngine
-    end
-
-    subgraph Native ["C++ Native Audio Engine (Oboe)"]
-        HarkNative["HarkAudioEngine (C++)"]
-        TrebleFilter["Treble Boost Filter"]
-        Limiter["Soft-Knee Limiter"]
-        HarkNative --> TrebleFilter --> Limiter
-    end
-
-    subgraph ML ["Speech-To-Text Engine"]
-        Sherpa["Sherpa-ONNX Recognizer"]
-        ModelMgr["STTModelManager"]
-        Sherpa --> ModelMgr
-    end
-
-    subgraph Storage ["Data & Storage Layer"]
-        RoomDB["HarkDatabase (Room)"]
-        DataStore["UserPreferencesRepository"]
-    end
-
-    HomeScreen --> Service
-    TranscribeScreen --> Service
-    SettingsScreen --> DataStore
-    AudioEngine --> HarkNative
-    Service --> Sherpa
-    Service --> RoomDB
+```bash
+git clone https://github.com/Ahmed04045/hark-app.git
+cd hark-app
 ```
 
-For complete architectural breakdown, threading diagrams, and module responsibilities, read the **[System Architecture Guide](docs/ARCHITECTURE.md)**.
+Allow Gradle to sync, then run the `app` configuration on a connected device. You can also build a debug APK from a terminal:
 
----
+```bash
+# macOS or Linux
+./gradlew assembleDebug
 
-## Technical Documentation
-
-Detailed documentation is available in the [`docs/`](docs/) directory:
-
-- **[System Architecture](docs/ARCHITECTURE.md)**: Deep dive into application layers, thread boundaries, audio callbacks, and service lifecycle.
-- **[Audio Processing Engine](docs/AUDIO_ENGINE.md)**: Details on native C++ Oboe integration, high-shelf biquad filter equations, soft-knee dynamics limiter formulas, and stream recovery logic.
-- **[Speech-to-Text Pipeline](docs/TRANSCRIPTION_ENGINE.md)**: Complete guide to Sherpa-ONNX offline recognition, model management, audio resampling, and Room database persistence.
-
----
-
-## Project Structure
-
-```
-hark-app/
-├── app/
-│   ├── src/main/cpp/               # Native C++ Audio Engine
-│   │   ├── hark_audio_engine.h     # Oboe stream callbacks & DSP header
-│   │   ├── hark_audio_engine.cpp   # Biquad filter, limiter, ring buffers
-│   │   ├── jni_bridge.cpp          # JNI native interface bindings
-│   │   └── CMakeLists.txt          # NDK & Oboe build configuration
-│   └── src/main/java/com/thivyanstudios/hark/
-│       ├── audio/                  # Audio engine Kotlin wrapper & fallbacks
-│       ├── data/                   # DataStore, STT Model Manager, Room DB
-│       ├── di/                     # Dependency Injection (Hilt modules)
-│       ├── service/                # Foreground Service & Audio Device Routing
-│       ├── ui/                     # Jetpack Compose Screens & ViewModels
-│       └── util/                   # Loggers, Permissions, System Utilities
-├── docs/                           # Detailed Technical Documentation
-│   ├── ARCHITECTURE.md
-│   ├── AUDIO_ENGINE.md
-│   └── TRANSCRIPTION_ENGINE.md
-└── README.md
+# Windows
+gradlew.bat assembleDebug
 ```
 
----
+The APK is written to `app/build/outputs/apk/debug/`. The first build needs network access to resolve dependencies and fetch the pinned RNNoise source.
 
-## Building & Setup
+HARK requests microphone access to capture audio. Android may also request notification permission for the foreground audio service. To use transcription, download the available model in the app; model files are stored in the app's private storage.
 
-### Prerequisites
-- **Android Studio**: Ladybug / 2024.2+ or Android Studio Jellyfish+
-- **Android SDK**: `compileSdk = 37`, `minSdk = 28` (Android 9.0+)
-- **Android NDK**: Version 25+ with CMake 3.22+ installed via Android SDK Manager
-- **JDK**: Java 11 or Java 17
+## Transcription and privacy
 
-### Build Steps
+Speech recognition runs on the device with a locally stored Sherpa-ONNX streaming model. The model is downloaded from Hugging Face when requested, so an internet connection is needed for that download. HARK does not send captured audio to a HARK-operated transcription service. Captions and any saved transcription history are kept on the device.
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/thivyan-studios/hark-app.git
-   cd hark-app
-   ```
+The app also keeps technical diagnostics locally. Review the in-app privacy/logging information before choosing to share a diagnostic log.
 
-2. **Open in Android Studio**:
-   Open the project root directory in Android Studio and let Gradle sync.
+## Project layout
 
-3. **Build APK**:
-   ```bash
-   ./gradlew assembleDebug
-   ```
+```text
+app/src/main/
+├── cpp/       Native audio engine and JNI bridge
+├── java/      Android app, audio, transcription, storage, and UI
+├── res/       Android resources
+└── assets/    Bundled notices
+docs/          Architecture and engine documentation
+```
 
-4. **Run on Device**:
-   Connect an Android phone (API 28+) via USB or Wireless ADB, and run:
-   ```bash
-   ./gradlew installDebug
-   ```
+More detail is available in:
 
-> [!NOTE]
-> For low latency audio streaming, testing on a physical Android device with ASHA-compatible hearing aids or Bluetooth headphones is recommended (Android Emulators lack native Bluetooth ASHA streaming support).
+- [System architecture](docs/ARCHITECTURE.md)
+- [Audio processing engine](docs/AUDIO_ENGINE.md)
+- [Speech-to-text pipeline](docs/TRANSCRIPTION_ENGINE.md)
 
----
+## License
 
-## Target Users
+HARK's original source code is distributed under the **BSD 3-Clause License**. See [LICENSE](LICENSE) for the copyright notice, conditions, and disclaimer. If you redistribute the source, retain that notice and the license terms; if you redistribute a binary, reproduce them in its documentation or other accompanying materials. The license also restricts using the copyright holder's or contributors' names to endorse derived products without prior written permission.
 
-- Hearing aid users in classrooms, lectures, family dinners, or noisy environments.
-- Anyone who needs an instant remote table mic without carrying extra hardware dongles.
-- Optimized for devices with **ASHA (Audio Streaming for Hearing Aids)** support.
+Third-party libraries, bundled components, and downloaded speech models may have separate licenses and terms. Their inclusion does not change those terms or make them part of HARK's BSD license. Review the applicable upstream notices before redistributing them. The bundled RNNoise notice is in `app/src/main/assets/licenses/RNNOISE.txt`.
 
----
+## Contributing
 
-## Author & Credits
-
-**Author**: Thivyan Pillay  
-**LinkedIn**: [thivyan-pillay](https://www.linkedin.com/in/thivyan-pillay/)
-
-> *"Hearing aid tech should be accessible — not locked behind overpriced accessories."*
-
-> Built and architected with assistance from Gemini.
+Bug reports and pull requests are welcome. When reporting an audio or routing issue, include your Android version, device model, and the type of connected audio device, and avoid attaching private recordings or transcripts.
