@@ -40,6 +40,12 @@ bool HarkAudioEngine::openStreamsLocked() {
             expf(-1.0f / (static_cast<float>(mSampleRate) * 0.080f));
     mRnnoiseOutputOffset = kRnnoiseFrameSize;
     mIsBuffering = true;
+    mInputResamplePhase = 0.0f;
+    mPreviousInputSample = 0.0f;
+    mHasPreviousInputSample = false;
+    mOutputResamplePhase = 0.0f;
+    mHasOutputCurrentSample = false;
+    mHasOutputNextSample = false;
 
     uint32_t fifoCapacity = std::max(static_cast<uint32_t>(mFramesPerBurst) * 16, static_cast<uint32_t>(4096));
     mFifoBuffer = std::make_unique<oboe::FifoBuffer>(sizeof(float), fifoCapacity);
@@ -78,15 +84,10 @@ bool HarkAudioEngine::openStreamsLocked() {
         closeStreams();
         return false;
     }
-    if (mInStream->getSampleRate() != mSampleRate) {
-        __android_log_print(ANDROID_LOG_ERROR, TAG,
-                "RNNoise requires %d Hz input, got %d Hz", mSampleRate, mInStream->getSampleRate());
-        closeStreams();
-        return false;
-    }
-    if (mInStream->getChannelCount() != 1) {
-        __android_log_print(ANDROID_LOG_ERROR, TAG,
-                "RNNoise requires mono input, got %d channels", mInStream->getChannelCount());
+    mInputSampleRate = mInStream->getSampleRate();
+    mInputChannelCount = mInStream->getChannelCount();
+    if (mInputSampleRate <= 0 || mInputChannelCount <= 0) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "Invalid input stream format");
         closeStreams();
         return false;
     }
@@ -108,18 +109,17 @@ bool HarkAudioEngine::openStreamsLocked() {
         closeStreams();
         return false;
     }
-    if (mOutStream->getSampleRate() != mSampleRate) {
-        __android_log_print(ANDROID_LOG_ERROR, TAG,
-                "RNNoise path requires %d Hz output, got %d Hz", mSampleRate, mOutStream->getSampleRate());
+    mOutputSampleRate = mOutStream->getSampleRate();
+    mOutputChannelCount = mOutStream->getChannelCount();
+    if (mOutputSampleRate <= 0 || mOutputChannelCount <= 0) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "Invalid output stream format");
         closeStreams();
         return false;
     }
-    if (mOutStream->getChannelCount() != 2) {
-        __android_log_print(ANDROID_LOG_ERROR, TAG,
-                "Stereo output required, got %d channels", mOutStream->getChannelCount());
-        closeStreams();
-        return false;
-    }
+    __android_log_print(ANDROID_LOG_INFO, TAG,
+            "Audio route: input %d Hz/%d ch (device %d), output %d Hz/%d ch",
+            mInputSampleRate, mInputChannelCount, mInputDeviceId,
+            mOutputSampleRate, mOutputChannelCount);
 
     mOutStream->setBufferSizeInFrames(mFramesPerBurst * 2);
     mInStream->requestStart();
@@ -185,19 +185,67 @@ oboe::DataCallbackResult HarkAudioEngine::onAudioReady(
         int32_t numFrames) {
 
     if (audioStream->getDirection() == oboe::Direction::Input) {
-        mFifoBuffer->write(audioData, numFrames);
+        const auto *inputData = static_cast<const float*>(audioData);
+        const int32_t inputChannels = std::max(1, audioStream->getChannelCount());
+        const float outputSamplesPerInputSample =
+                static_cast<float>(mSampleRate) / static_cast<float>(mInputSampleRate);
+        int32_t resampledCount = 0;
+        auto flushResampledInput = [&]() {
+            if (resampledCount == 0) return;
+            const int32_t written = mFifoBuffer->write(mResampledInput, resampledCount);
+            if (written < resampledCount) {
+                static int32_t overflowLogCounter = 0;
+                if (++overflowLogCounter % 100 == 1) {
+                    __android_log_print(ANDROID_LOG_WARN, TAG,
+                            "Input FIFO full; dropped %d resampled frames",
+                            resampledCount - written);
+                }
+            }
+            resampledCount = 0;
+        };
 
-        // Apply gain to transcription data as well so Whisper gets a usable signal
+        for (int32_t frame = 0; frame < numFrames; ++frame) {
+            float monoSample = 0.0f;
+            for (int32_t channel = 0; channel < inputChannels; ++channel) {
+                monoSample += inputData[frame * inputChannels + channel];
+            }
+            monoSample /= static_cast<float>(inputChannels);
+
+            if (!mHasPreviousInputSample) {
+                mPreviousInputSample = monoSample;
+                mHasPreviousInputSample = true;
+                continue;
+            }
+
+            mInputResamplePhase += outputSamplesPerInputSample;
+            while (mInputResamplePhase >= 1.0f) {
+                mInputResamplePhase -= 1.0f;
+                const float interpolation =
+                        1.0f - mInputResamplePhase / outputSamplesPerInputSample;
+                mResampledInput[resampledCount++] =
+                        mPreviousInputSample +
+                        (monoSample - mPreviousInputSample) * interpolation;
+                if (resampledCount == kMaxResampledFrames) {
+                    flushResampledInput();
+                }
+            }
+            mPreviousInputSample = monoSample;
+        }
+        flushResampledInput();
+
+        // Keep the transcription side channel mono even if a route negotiates stereo input.
         float currentGain = mGain.load(std::memory_order_acquire);
-        auto *inputData = static_cast<const float*>(audioData);
-
-        // Significant gain specifically for transcription to help Whisper detect speech in quiet environments
         float transcriptionGain = currentGain * 10.0f;
 
         float sumSquares = 0.0f;
         int32_t framesToProcess = std::min(numFrames, kMaxFrames);
         for (int i = 0; i < framesToProcess; ++i) {
-            float sample = inputData[i] * transcriptionGain;
+            float monoSample = 0.0f;
+            for (int32_t channel = 0; channel < inputChannels; ++channel) {
+                monoSample += inputData[i * inputChannels + channel];
+            }
+            monoSample /= static_cast<float>(inputChannels);
+            float sample = monoSample * transcriptionGain;
             mGainedBuffer[i] = sample;
             sumSquares += sample * sample;
         }
@@ -232,40 +280,68 @@ oboe::DataCallbackResult HarkAudioEngine::onAudioReady(
             updateSpeechPresenceCoefficients(mSampleRate, requestedGainDb);
         }
 
+        const float sourceSamplesPerOutputSample =
+                static_cast<float>(mSampleRate) / static_cast<float>(mOutputSampleRate);
         for (int32_t frame = 0; frame < numFrames; ++frame) {
-            if (mRnnoiseOutputOffset >= kRnnoiseFrameSize) {
-                uint32_t framesAvailable = mFifoBuffer->getFullFramesAvailable();
-                if (framesAvailable < kRnnoiseFrameSize) {
-                    std::fill_n(outputData + frame * channelCount,
-                                (numFrames - frame) * channelCount, 0.0f);
-                    mIsBuffering = true;
-                    break;
-                }
-
-                if (mIsBuffering &&
-                    framesAvailable < static_cast<uint32_t>(std::max(numFrames * 4, kRnnoiseFrameSize))) {
-                    std::fill_n(outputData, numFrames * channelCount, 0.0f);
-                    break;
-                }
-                mIsBuffering = false;
-
-                const int32_t framesRead = mFifoBuffer->read(mRnnoiseInput, kRnnoiseFrameSize);
-                if (framesRead != kRnnoiseFrameSize) {
-                    std::fill_n(outputData + frame * channelCount,
-                                (numFrames - frame) * channelCount, 0.0f);
-                    mIsBuffering = true;
-                    break;
-                }
-                processRnnoiseFrame(noiseSuppressionEnabled, dynamicsEnabled, currentGain);
+            if (!mHasOutputCurrentSample) {
+                mHasOutputCurrentSample = readProcessedSample(
+                        &mOutputCurrentSample, noiseSuppressionEnabled,
+                        dynamicsEnabled, currentGain);
+            }
+            if (!mHasOutputCurrentSample) {
+                std::fill_n(outputData + frame * channelCount, channelCount, 0.0f);
+                continue;
+            }
+            if (!mHasOutputNextSample) {
+                mHasOutputNextSample = readProcessedSample(
+                        &mOutputNextSample, noiseSuppressionEnabled,
+                        dynamicsEnabled, currentGain);
+            }
+            if (!mHasOutputNextSample) {
+                std::fill_n(outputData + frame * channelCount, channelCount, 0.0f);
+                continue;
             }
 
-            const float sample = mRnnoiseOutput[mRnnoiseOutputOffset++];
+            while (mOutputResamplePhase >= 1.0f) {
+                mOutputCurrentSample = mOutputNextSample;
+                mHasOutputNextSample = false;
+                mOutputResamplePhase -= 1.0f;
+                mHasOutputNextSample = readProcessedSample(
+                        &mOutputNextSample, noiseSuppressionEnabled,
+                        dynamicsEnabled, currentGain);
+                if (!mHasOutputNextSample) break;
+            }
+            if (!mHasOutputNextSample) {
+                std::fill_n(outputData + frame * channelCount, channelCount, 0.0f);
+                continue;
+            }
+
+            const float sample = mOutputCurrentSample +
+                    (mOutputNextSample - mOutputCurrentSample) * mOutputResamplePhase;
             for (int32_t channel = 0; channel < channelCount; ++channel) {
                 outputData[frame * channelCount + channel] = sample;
             }
+            mOutputResamplePhase += sourceSamplesPerOutputSample;
         }
     }
     return oboe::DataCallbackResult::Continue;
+}
+
+bool HarkAudioEngine::readProcessedSample(
+        float *sample, bool noiseSuppressionEnabled, bool dynamicsEnabled, float gain) {
+    if (mRnnoiseOutputOffset >= kRnnoiseFrameSize) {
+        const uint32_t framesAvailable = mFifoBuffer->getFullFramesAvailable();
+        constexpr uint32_t kStartupBufferFrames = kRnnoiseFrameSize * 2;
+        if (mIsBuffering && framesAvailable < kStartupBufferFrames) return false;
+        if (framesAvailable < kRnnoiseFrameSize) return false;
+
+        const int32_t framesRead = mFifoBuffer->read(mRnnoiseInput, kRnnoiseFrameSize);
+        if (framesRead != kRnnoiseFrameSize) return false;
+        mIsBuffering = false;
+        processRnnoiseFrame(noiseSuppressionEnabled, dynamicsEnabled, gain);
+    }
+    *sample = mRnnoiseOutput[mRnnoiseOutputOffset++];
+    return true;
 }
 
 void HarkAudioEngine::pushToTranscriptionFifo(const float* data, int32_t numFrames) {

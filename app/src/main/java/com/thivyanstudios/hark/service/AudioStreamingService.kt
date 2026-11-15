@@ -264,11 +264,12 @@ class AudioStreamingService : Service(), AudioStreamingController {
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
         val devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
             .mapNotNull { device ->
-                val label = when (device.type) {
+                val typeLabel = when (device.type) {
                     AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Phone Built-in Mic"
                     AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired Headset Mic"
                     AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth Headset Mic"
                     AudioDeviceInfo.TYPE_USB_HEADSET -> "USB Headset Mic"
+                    AudioDeviceInfo.TYPE_USB_DEVICE -> "USB Microphone"
                     else -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                         device.type == AudioDeviceInfo.TYPE_BLE_HEADSET) {
                         "Bluetooth Headset Mic"
@@ -276,14 +277,22 @@ class AudioStreamingService : Service(), AudioStreamingController {
                         null
                     }
                 }
-                label?.let { AudioInputDevice(device.id, it) }
+                typeLabel?.let {
+                    val productName = device.productName.toString().trim()
+                    val label = if (productName.isNotEmpty()) "$productName ($it)" else it
+                    AudioInputDevice(
+                        id = device.id,
+                        label = label,
+                        isBuiltIn = device.type == AudioDeviceInfo.TYPE_BUILTIN_MIC
+                    )
+                }
             }
             .distinctBy { it.id }
-            .sortedBy { if (it.label == "Phone Built-in Mic") 0 else 1 }
+            .sortedBy { if (it.isBuiltIn) 0 else 1 }
 
         val previousId = _selectedInputDeviceId.value
         val nextId = previousId?.takeIf { id -> devices.any { it.id == id } }
-            ?: devices.firstOrNull { it.label == "Phone Built-in Mic" }?.id
+            ?: devices.firstOrNull { it.isBuiltIn }?.id
             ?: devices.firstOrNull()?.id
         _audioInputDevices.value = devices
         _selectedInputDeviceId.value = nextId

@@ -1,6 +1,7 @@
 package com.thivyanstudios.hark.audio
 
 import android.content.Context
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import com.thivyanstudios.hark.audio.model.AudioEngineEvent
 import com.thivyanstudios.hark.audio.model.AudioProcessingConfig
@@ -85,9 +86,11 @@ class AudioEngine @Inject constructor(
         }
         
         if (!success) {
-            HarkLog.w(TAG, "Falling back to Java/Kotlin audio engine")
-            sendError("High-Performance Engine unavailable. Using fallback.")
-            streamManager.start(currentConfig)
+            HarkLog.w(TAG, "Native DSP engine failed to start; using the basic audio fallback")
+            sendError("Native audio processing is unavailable. The fallback does not provide RNNoise suppression.")
+            val preferredInput = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+                .firstOrNull { it.id == inputDeviceId }
+            streamManager.start(currentConfig, preferredInput)
         }
     }
 

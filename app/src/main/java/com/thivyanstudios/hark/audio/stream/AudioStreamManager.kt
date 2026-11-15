@@ -2,6 +2,7 @@ package com.thivyanstudios.hark.audio.stream
 
 import android.annotation.SuppressLint
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
@@ -26,7 +27,7 @@ class AudioStreamManager(private val audioProcessor: AudioProcessor) {
     private val lock = Any()
 
     @SuppressLint("MissingPermission")
-    fun start(config: AudioProcessingConfig) {
+    fun start(config: AudioProcessingConfig, preferredInputDevice: AudioDeviceInfo? = null) {
         if (isRunning.getAndSet(true)) {
             Log.d(TAG, "start() called but already running")
             return
@@ -39,7 +40,7 @@ class AudioStreamManager(private val audioProcessor: AudioProcessor) {
 
         executor.execute {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-            runStreamingLoop(config)
+            runStreamingLoop(config, preferredInputDevice)
         }
     }
 
@@ -83,7 +84,7 @@ class AudioStreamManager(private val audioProcessor: AudioProcessor) {
     }
 
     @SuppressLint("MissingPermission")
-    private fun runStreamingLoop(config: AudioProcessingConfig) {
+    private fun runStreamingLoop(config: AudioProcessingConfig, preferredInputDevice: AudioDeviceInfo?) {
         val channelConfig = AudioFormat.CHANNEL_IN_MONO
         val audioFormat = AudioFormat.ENCODING_PCM_FLOAT
         val bufferSize = AudioRecord.getMinBufferSize(
@@ -102,6 +103,9 @@ class AudioStreamManager(private val audioProcessor: AudioProcessor) {
             // Initialize underlying hardware first
             audioTrack = createAudioTrack(audioFormat, bufferSize)
             audioRecord = createAudioRecord(channelConfig, audioFormat, bufferSize)
+            if (preferredInputDevice != null && !audioRecord.setPreferredDevice(preferredInputDevice)) {
+                Log.w(TAG, "Could not apply preferred microphone: ${preferredInputDevice.productName}")
+            }
             audioSource = AndroidAudioSource(audioRecord)
             audioSink = AndroidAudioSink(audioTrack)
 
@@ -136,7 +140,7 @@ class AudioStreamManager(private val audioProcessor: AudioProcessor) {
         return AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )

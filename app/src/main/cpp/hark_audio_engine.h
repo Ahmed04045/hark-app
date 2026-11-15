@@ -99,6 +99,21 @@ private:
     std::mutex mRestartThreadLock;
     int32_t mFramesPerBurst = 192;
     int32_t mInputDeviceId = -1;
+    static constexpr int32_t kMaxFrames = 2048;
+    int32_t mInputSampleRate = 48000;
+    int32_t mInputChannelCount = 1;
+    int32_t mOutputSampleRate = 48000;
+    int32_t mOutputChannelCount = 2;
+    float mInputResamplePhase = 0.0f;
+    float mPreviousInputSample = 0.0f;
+    bool mHasPreviousInputSample = false;
+    static constexpr int32_t kMaxResampledFrames = kMaxFrames * 6 + 8;
+    float mResampledInput[kMaxResampledFrames]{};
+    float mOutputCurrentSample = 0.0f;
+    float mOutputNextSample = 0.0f;
+    float mOutputResamplePhase = 0.0f;
+    bool mHasOutputCurrentSample = false;
+    bool mHasOutputNextSample = false;
 
     bool openStreamsLocked();
     void restartStreams();
@@ -108,6 +123,8 @@ private:
     void updateSpeechPresenceCoefficients(int32_t sampleRate, float gainDb);
     void closeStreams();
     void processRnnoiseFrame(bool noiseSuppressionEnabled, bool dynamicsEnabled, float gain);
+    bool readProcessedSample(float *sample, bool noiseSuppressionEnabled,
+                             bool dynamicsEnabled, float gain);
     float applySoftKneeLimiter(float input);
     float applyPeakLimiter(float input);
 
@@ -116,7 +133,6 @@ private:
     int32_t mSampleRate = 48000;
 
     // Pre-allocated buffers for audio processing to avoid heap allocation in callback
-    static constexpr int32_t kMaxFrames = 2048;
     float mGainedBuffer[kMaxFrames]{};
 };
 

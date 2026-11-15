@@ -52,9 +52,8 @@ class DefaultAudioProcessor(private val events: Channel<AudioEngineEvent>) : Aud
     }
 
     private fun setupAudioEffects() {
-        // We notify the UI that hardware/native features are preferred
-        events.trySend(AudioEngineEvent.NoiseSuppressorAvailability(true))
-        events.trySend(AudioEngineEvent.DynamicsProcessingAvailability(true))
+        events.trySend(AudioEngineEvent.NoiseSuppressorAvailability(false))
+        events.trySend(AudioEngineEvent.DynamicsProcessingAvailability(false))
     }
 
     private fun applyGain(buffer: FloatArray, size: Int) {

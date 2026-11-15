@@ -6,7 +6,7 @@ This document details the low-latency C++ native audio engine (**HarkAudioEngine
 
 ## Engine Overview
 
-The core audio engine (`app/src/main/cpp/hark_audio_engine.cpp` / `hark_audio_engine.h`) is written in C++17 using **Google Oboe**. It captures from a selectable input device, applies speech-focused DSP, and sends a mono microphone signal to shared stereo Media output. The app does not request audio focus, so Android can mix the output with other media playback.
+The core audio engine (`app/src/main/cpp/hark_audio_engine.cpp` / `hark_audio_engine.h`) is written in C++17 using **Google Oboe**. It captures from a selectable input device, converts the negotiated input rate to RNNoise's 48 kHz processing rate, applies speech-focused DSP, and converts to the output route's negotiated rate and channel count. The app does not request audio focus, so Android can mix the output with other media playback.
 
 ### Key Performance Goals
 - **Ultra-low latency**: Hardware-direct AAudio/OpenSL ES performance mode (`oboe::PerformanceMode::LowLatency`).
@@ -76,8 +76,9 @@ The optional Dynamics Processing setting applies the existing soft-knee stage be
 
 Audio clocks on mobile microphones and Bluetooth output endpoints can drift slightly. To eliminate audible popping or snapping due to buffer underruns:
 1. The engine starts in `mIsBuffering = true` mode and waits for at least 480 input frames (and the configured prebuffer target).
-2. The output callback consumes complete 480-sample RNNoise frames from the SPSC FIFO and duplicates each processed mono sample across the stereo output channels.
-3. If a frame is unavailable, remaining output is zero-padded and pre-buffering re-engages.
+2. The initial output waits for a 960-sample (20 ms) input prebuffer, then consumes complete 480-sample RNNoise frames from the FIFO.
+3. If a frame is temporarily unavailable, only the affected output frames are zero-padded. The initial prebuffer is not reapplied, avoiding repeated silence bursts after a brief underrun.
+4. Processed mono samples are duplicated to every negotiated output channel. Bluetooth headset microphones may require Android to switch from A2DP to SCO, which can reduce playback bandwidth or change it to mono depending on the device.
 
 ---
 
@@ -117,6 +118,6 @@ sequenceDiagram
 
 ## Java/Kotlin Fallback Engine
 
-If the native C++ library fails to load or cannot initialize hardware streams on non-standard Android hardware, [AudioEngine.kt](file:///D:/Development/hark-app/app/src/main/java/com/thivyanstudios/hark/audio/AudioEngine.kt) automatically falls back to:
+If the native C++ library fails to load or cannot initialize hardware streams on non-standard Android hardware, [AudioEngine.kt](../app/src/main/java/com/thivyanstudios/hark/audio/AudioEngine.kt) falls back to:
 - **AudioStreamManager.kt**: Manages Java `AudioRecord` (Input) and `AudioTrack` (Output) for the fallback path.
-- **[DefaultAudioProcessor.kt](file:///D:/Development/hark-app/app/src/main/java/com/thivyanstudios/hark/audio/processor/DefaultAudioProcessor.kt)**: Pure Kotlin PCM float processing fallback.
+- **[DefaultAudioProcessor.kt](../app/src/main/java/com/thivyanstudios/hark/audio/processor/DefaultAudioProcessor.kt)**: Pure Kotlin PCM float processing fallback. It does not provide RNNoise suppression, and the settings UI reports those DSP features as unavailable while this fallback is active.
