@@ -174,6 +174,21 @@ fun SettingsScreen(
             // Section: Audio
             SettingsGroup(title = "Audio Engine") {
                 SettingsSwitchRow(
+                    text = stringResource(R.string.settings_automatic_gain_control),
+                    icon = Icons.Default.Tune,
+                    checked = uiState.automaticGainControlEnabled,
+                    onCheckedChange = settingsViewModel::setAutomaticGainControlEnabled,
+                    hapticFeedbackEnabled = uiState.hapticFeedbackEnabled
+                )
+
+                HarkText(
+                    text = stringResource(R.string.settings_automatic_gain_control_description),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                )
+
+                SettingsSwitchRow(
                     text = stringResource(R.string.settings_noise_suppression),
                     icon = Icons.Default.FilterList,
                     checked = uiState.noiseSuppressionEnabled,

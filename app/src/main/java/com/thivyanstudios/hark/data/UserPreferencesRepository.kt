@@ -32,6 +32,7 @@ class UserPreferencesRepository @Inject constructor(
         val ENABLE_BLUETOOTH_HEADSET_SUPPORT = booleanPreferencesKey("enable_bluetooth_headset_support")
         val MICROPHONE_GAIN = floatPreferencesKey("microphone_gain")
         val NOISE_SUPPRESSION_ENABLED = booleanPreferencesKey("noise_suppression_enabled")
+        val AUTOMATIC_GAIN_CONTROL_ENABLED = booleanPreferencesKey("automatic_gain_control_enabled")
         val DYNAMICS_PROCESSING_ENABLED = booleanPreferencesKey("dynamics_processing_enabled")
         val SPEECH_PRESENCE_GAIN_DB = floatPreferencesKey("speech_presence_gain_db")
         val BYPASS_BLUETOOTH_CHECKS = booleanPreferencesKey("bypass_bluetooth_checks")
@@ -60,6 +61,7 @@ class UserPreferencesRepository @Inject constructor(
                 enableBluetoothHeadsetSupport = preferences[PreferenceKeys.ENABLE_BLUETOOTH_HEADSET_SUPPORT] ?: false,
                 microphoneGain = preferences[PreferenceKeys.MICROPHONE_GAIN] ?: Constants.Preferences.DEFAULT_GAIN,
                 noiseSuppressionEnabled = preferences[PreferenceKeys.NOISE_SUPPRESSION_ENABLED] ?: true,
+                automaticGainControlEnabled = preferences[PreferenceKeys.AUTOMATIC_GAIN_CONTROL_ENABLED] ?: true,
                 dynamicsProcessingEnabled = preferences[PreferenceKeys.DYNAMICS_PROCESSING_ENABLED] ?: false,
                 speechPresenceGainDb = preferences[PreferenceKeys.SPEECH_PRESENCE_GAIN_DB] ?: 6.0f,
                 bypassBluetoothChecks = preferences[PreferenceKeys.BYPASS_BLUETOOTH_CHECKS] ?: false,
@@ -92,6 +94,10 @@ class UserPreferencesRepository @Inject constructor(
 
     suspend fun setNoiseSuppressionEnabled(isEnabled: Boolean) = update {
         it[PreferenceKeys.NOISE_SUPPRESSION_ENABLED] = isEnabled
+    }
+
+    suspend fun setAutomaticGainControlEnabled(isEnabled: Boolean) = update {
+        it[PreferenceKeys.AUTOMATIC_GAIN_CONTROL_ENABLED] = isEnabled
     }
     
     suspend fun setDynamicsProcessingEnabled(isEnabled: Boolean) = update {

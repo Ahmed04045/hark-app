@@ -23,12 +23,14 @@ public:
     bool start(int32_t sampleRate, int32_t framesPerBurst, int32_t inputDeviceId,
                bool useCommunicationInputPreset);
     void stop();
+    int32_t getInputSessionId();
 
     int32_t readTranscriptionData(float *target, int32_t numFrames);
     float getTranscriptionLevel();
 
     void setMicrophoneGain(float gain);
     void setNoiseSuppressionEnabled(bool enabled);
+    void setAutomaticGainControlEnabled(bool enabled);
     void setDynamicsProcessingEnabled(bool enabled);
     void setTranscriptModeEnabled(bool enabled);
     void setSpeechPresenceGainDb(float gainDb);
@@ -52,6 +54,7 @@ private:
     // Use atomic for thread-safe access from audio thread without locking
     std::atomic<float> mGain{1.0f};
     std::atomic<bool> mIsNoiseSuppressionEnabled{true};
+    std::atomic<bool> mIsAutomaticGainControlEnabled{true};
     std::atomic<bool> mIsDynamicsProcessingEnabled{false};
     std::atomic<bool> mIsTranscriptModeEnabled{false};
 
@@ -88,6 +91,7 @@ private:
     int32_t mRnnoiseOutputOffset = kRnnoiseFrameSize;
     float mLimiterGain = 1.0f;
     float mLimiterReleaseCoefficient = 0.0f;
+    float mAutomaticGain = 1.0f;
 
     bool mIsBuffering = true;
 
@@ -100,6 +104,7 @@ private:
     std::mutex mRestartThreadLock;
     int32_t mFramesPerBurst = 192;
     int32_t mInputDeviceId = -1;
+    int32_t mInputSessionId = 0;
     bool mUseCommunicationInputPreset = false;
     static constexpr int32_t kMaxFrames = 2048;
     int32_t mInputSampleRate = 48000;

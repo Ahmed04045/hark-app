@@ -39,6 +39,7 @@ bool HarkAudioEngine::openStreamsLocked() {
     // Reset processing states
     mEnvelope = 0.0f;
     mLimiterGain = 1.0f;
+    mAutomaticGain = 1.0f;
     mLimiterReleaseCoefficient =
             expf(-1.0f / (static_cast<float>(mSampleRate) * 0.080f));
     mRnnoiseOutputOffset = kRnnoiseFrameSize;
@@ -79,6 +80,9 @@ bool HarkAudioEngine::openStreamsLocked() {
                     : oboe::InputPreset::VoiceRecognition)
             ->setDataCallback(this)
             ->setErrorCallback(this);
+    inBuilder.setSessionId(mInputSessionId > 0
+            ? static_cast<oboe::SessionId>(mInputSessionId)
+            : oboe::SessionId::Allocate);
     if (mInputDeviceId >= 0) {
         inBuilder.setDeviceId(mInputDeviceId);
     }
@@ -91,6 +95,11 @@ bool HarkAudioEngine::openStreamsLocked() {
     }
     mInputSampleRate = mInStream->getSampleRate();
     mInputChannelCount = mInStream->getChannelCount();
+    const int32_t openedSessionId =
+            static_cast<int32_t>(mInStream->getSessionId());
+    if (openedSessionId > 0) {
+        mInputSessionId = openedSessionId;
+    }
     if (mInputSampleRate <= 0 || mInputChannelCount <= 0) {
         __android_log_print(ANDROID_LOG_ERROR, TAG, "Invalid input stream format");
         closeStreams();
@@ -140,6 +149,11 @@ void HarkAudioEngine::stop() {
     closeStreams();
 }
 
+int32_t HarkAudioEngine::getInputSessionId() {
+    std::lock_guard<std::mutex> lock(mStreamLock);
+    return mInputSessionId;
+}
+
 void HarkAudioEngine::joinRestartThread() {
     std::lock_guard<std::mutex> lock(mRestartThreadLock);
     if (mRestartThread.joinable()) {
@@ -173,6 +187,9 @@ float HarkAudioEngine::getTranscriptionLevel() {
 void HarkAudioEngine::setMicrophoneGain(float gain) { mGain.store(gain, std::memory_order_release); }
 void HarkAudioEngine::setNoiseSuppressionEnabled(bool enabled) {
     mIsNoiseSuppressionEnabled.store(enabled, std::memory_order_release);
+}
+void HarkAudioEngine::setAutomaticGainControlEnabled(bool enabled) {
+    mIsAutomaticGainControlEnabled.store(enabled, std::memory_order_release);
 }
 void HarkAudioEngine::setDynamicsProcessingEnabled(bool enabled) {
     mIsDynamicsProcessingEnabled.store(enabled, std::memory_order_release);
@@ -407,9 +424,33 @@ void HarkAudioEngine::updateSpeechPresenceCoefficients(int32_t sampleRate, float
 
 void HarkAudioEngine::processRnnoiseFrame(
         bool noiseSuppressionEnabled, bool dynamicsEnabled, float gain) {
+    float sumSquares = 0.0f;
     for (int32_t i = 0; i < kRnnoiseFrameSize; ++i) {
         const float highPassed = mHighPass.process(mRnnoiseInput[i]);
-        mRnnoiseScratch[i] = highPassed * 32768.0f;
+        mRnnoiseScratch[i] = highPassed;
+        sumSquares += highPassed * highPassed;
+    }
+
+    if (mIsAutomaticGainControlEnabled.load(std::memory_order_acquire)) {
+        constexpr float kTargetRms = 0.06309573f; // -24 dBFS
+        constexpr float kMinimumRms = 0.0001f;
+        constexpr float kMinimumGain = 0.25f;
+        constexpr float kMaximumGain = 16.0f;
+        const float inputRms = std::sqrt(sumSquares / kRnnoiseFrameSize);
+        const float targetGain = inputRms < kMinimumRms
+                ? 1.0f
+                : std::clamp(kTargetRms / inputRms, kMinimumGain, kMaximumGain);
+        const float timeConstant = targetGain > mAutomaticGain ? 0.45f : 0.06f;
+        const float frameSeconds =
+                static_cast<float>(kRnnoiseFrameSize) / static_cast<float>(mSampleRate);
+        const float smoothing = expf(-frameSeconds / timeConstant);
+        mAutomaticGain = targetGain + smoothing * (mAutomaticGain - targetGain);
+    } else {
+        mAutomaticGain = 1.0f;
+    }
+
+    for (int32_t i = 0; i < kRnnoiseFrameSize; ++i) {
+        mRnnoiseScratch[i] *= mAutomaticGain * 32768.0f;
     }
 
     if (noiseSuppressionEnabled && mRnnoiseState) {

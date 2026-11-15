@@ -160,6 +160,7 @@ class SettingsViewModel @Inject constructor(
             enableBluetoothHeadsetSupport = prefs.enableBluetoothHeadsetSupport,
             microphoneGain = prefs.microphoneGain,
             noiseSuppressionEnabled = prefs.noiseSuppressionEnabled,
+            automaticGainControlEnabled = prefs.automaticGainControlEnabled,
             dynamicsProcessingEnabled = prefs.dynamicsProcessingEnabled,
             speechPresenceGainDb = prefs.speechPresenceGainDb,
             bypassBluetoothChecks = prefs.bypassBluetoothChecks,
@@ -212,6 +213,12 @@ class SettingsViewModel @Inject constructor(
     fun setNoiseSuppressionEnabled(isEnabled: Boolean) {
         viewModelScope.launch(ioDispatcher) {
             userPreferencesRepository.setNoiseSuppressionEnabled(isEnabled)
+        }
+    }
+
+    fun setAutomaticGainControlEnabled(isEnabled: Boolean) {
+        viewModelScope.launch(ioDispatcher) {
+            userPreferencesRepository.setAutomaticGainControlEnabled(isEnabled)
         }
     }
     

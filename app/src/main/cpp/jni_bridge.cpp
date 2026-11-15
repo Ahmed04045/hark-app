@@ -36,6 +36,14 @@ Java_com_thivyanstudios_hark_audio_AudioEngine_nativeStop(JNIEnv *env, jobject t
 }
 
 extern "C"
+JNIEXPORT jint JNICALL
+Java_com_thivyanstudios_hark_audio_AudioEngine_nativeGetInputSessionId(
+        JNIEnv *env, jobject thiz, jlong handle) {
+    auto *engine = reinterpret_cast<HarkAudioEngine *>(handle);
+    return engine ? engine->getInputSessionId() : 0;
+}
+
+extern "C"
 JNIEXPORT void JNICALL
 Java_com_thivyanstudios_hark_audio_AudioEngine_nativeSetMicrophoneGain(JNIEnv *env, jobject thiz, jlong handle, jfloat gain) {
     auto *engine = reinterpret_cast<HarkAudioEngine *>(handle);
@@ -50,6 +58,16 @@ Java_com_thivyanstudios_hark_audio_AudioEngine_nativeSetNoiseSuppressionEnabled(
     auto *engine = reinterpret_cast<HarkAudioEngine *>(handle);
     if (engine) {
         engine->setNoiseSuppressionEnabled(enabled);
+    }
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_thivyanstudios_hark_audio_AudioEngine_nativeSetAutomaticGainControlEnabled(
+        JNIEnv *env, jobject thiz, jlong handle, jboolean enabled) {
+    auto *engine = reinterpret_cast<HarkAudioEngine *>(handle);
+    if (engine) {
+        engine->setAutomaticGainControlEnabled(enabled == JNI_TRUE);
     }
 }
 

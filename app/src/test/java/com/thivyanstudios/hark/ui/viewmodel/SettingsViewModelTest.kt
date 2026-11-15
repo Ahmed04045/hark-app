@@ -114,6 +114,9 @@ class SettingsViewModelTest {
 
         viewModel.setMicrophoneGain(1.5f)
         verify(userPreferencesRepository).setMicrophoneGain(1.5f)
+
+        viewModel.setAutomaticGainControlEnabled(false)
+        verify(userPreferencesRepository).setAutomaticGainControlEnabled(false)
     }
 
     @Test

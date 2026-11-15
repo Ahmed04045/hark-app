@@ -13,6 +13,8 @@
     <string name="settings_support_kofi">Support me on Ko-fi</string>
     <string name="gain_db_format">%1$s dB</string>
     <string name="settings_noise_suppression">Noise Suppression</string>
+    <string name="settings_automatic_gain_control">Automatic gain control (AGC)</string>
+    <string name="settings_automatic_gain_control_description">Raises quiet input and eases down on loud input. It can also raise background noise when suppression is off. Headphones are recommended because disabling echo cancellation can cause speaker feedback.</string>
     <string name="settings_dynamics_processing">Dynamics Processing (Compressor)</string>
     <string name="settings_treble_boost">Speech Clarity (Treble Boost)</string>
     <string name="settings_generate_log">Generate log</string>

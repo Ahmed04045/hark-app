@@ -58,7 +58,7 @@ The high-pass filter removes low-frequency handling and environmental rumble bef
 
 The engine compiles the upstream RNNoise v0.1.1 C implementation at a pinned commit. It processes 480-sample (10 ms) mono frames at 48 kHz. Input and output callbacks communicate through Oboe's single-producer/single-consumer FIFO; the denoiser state and frame buffers are initialized before streaming, not allocated in the callback. Noise suppression is enabled by default and can be disabled in Audio Engine settings.
 
-Built-in, wired, and USB microphones use Android's `VoiceRecognition` input preset so platform voice-communication suppression does not pre-process the signal before RNNoise. Bluetooth headset microphones use `VoiceCommunication` to retain compatibility with communication-profile routing.
+Built-in, wired, and USB microphones use Android's `VoiceRecognition` input preset so platform voice-communication processing is not requested before RNNoise. Bluetooth headset microphones use `VoiceCommunication` to retain compatibility with communication-profile routing. Oboe allocates an input audio session; Hark attempts to disable Android's session-level NoiseSuppressor, AcousticEchoCanceler, and AutomaticGainControl on that session. Devices may not expose or grant control of these effects, and vendor DSP can still run outside the app's control. Hark logs whether each effect was disabled.
 
 ### 3. Speech-Presence Peaking EQ
 
@@ -74,7 +74,11 @@ The coefficients are updated on the audio callback when the atomic gain setting 
 Gain reduction engages immediately on peaks (faster than 0.5 ms), releases with an 80 ms exponential time constant, and hard-clamps the final output to $10^{-3/20}$ (-3 dBFS).
 The optional Dynamics Processing setting applies the existing soft-knee stage before this always-on peak limiter.
 
-### 5. Pre-Buffering & Jitter Absorption
+### 5. Software Automatic Gain Control
+
+AGC is enabled by default and can be toggled in Audio Engine settings. It normalizes each 10 ms frame toward -24 dBFS before RNNoise, with gain limited to -12 dB through +24 dB. Gain rises over about 450 ms and backs off over about 60 ms; the existing -3 dBFS limiter still caps output peaks. Putting AGC before RNNoise gives quiet speech a better chance of surviving denoising. AGC cannot distinguish quiet speech from quiet noise, so background noise can become more audible when RNNoise is disabled. Acoustic echo cancellation is explicitly disabled when the platform permits; headphones are recommended to avoid speaker-to-microphone feedback.
+
+### 6. Pre-Buffering & Jitter Absorption
 
 Audio clocks on mobile microphones and Bluetooth output endpoints can drift slightly. To eliminate audible popping or snapping due to buffer underruns:
 1. The engine starts in `mIsBuffering = true` mode and waits for at least 480 input frames (and the configured prebuffer target).
@@ -84,7 +88,7 @@ Audio clocks on mobile microphones and Bluetooth output endpoints can drift slig
 
 ---
 
-### 6. Transcription Signal Pipeline
+### 7. Transcription Signal Pipeline
 
 - Dedicated 10-second `mTranscriptionFifo` buffer independent of output streaming.
 - Applies a 10x signal boost to transcription inputs to enable speech recognition in quiet environments.

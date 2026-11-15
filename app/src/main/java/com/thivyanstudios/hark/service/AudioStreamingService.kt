@@ -201,6 +201,7 @@ class AudioStreamingService : Service(), AudioStreamingController {
                 val gain = 10.0.pow(prefs.microphoneGain / 20.0).toFloat()
                 audioEngine.setMicrophoneGain(gain)
                 audioEngine.setNoiseSuppressionEnabled(prefs.noiseSuppressionEnabled)
+                audioEngine.setAutomaticGainControlEnabled(prefs.automaticGainControlEnabled)
                 audioEngine.setDynamicsProcessingEnabled(prefs.dynamicsProcessingEnabled)
                 audioEngine.setSpeechPresenceGainDb(prefs.speechPresenceGainDb)
                 audioEngine.setTranscriptModeEnabled(prefs.transcriptModeEnabled)

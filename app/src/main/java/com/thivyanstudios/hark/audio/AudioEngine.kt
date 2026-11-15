@@ -39,6 +39,8 @@ class AudioEngine @Inject constructor(
     // Native handle to the C++ HarkAudioEngine instance
     private var nativeHandle: Long = 0
 
+    private val platformInputEffects = PlatformInputEffects()
+
     private val _errorEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val errorEvents = _errorEvents.asSharedFlow()
 
@@ -92,11 +94,14 @@ class AudioEngine @Inject constructor(
         }
         
         if (!success) {
+            platformInputEffects.release()
             HarkLog.w(TAG, "Native DSP engine failed to start; using the basic audio fallback")
             sendError("Native audio processing is unavailable. The fallback does not provide RNNoise suppression.")
             val preferredInput = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
                 .firstOrNull { it.id == inputDeviceId }
             streamManager.start(currentConfig, preferredInput)
+        } else {
+            platformInputEffects.disable(nativeGetInputSessionId(nativeHandle))
         }
     }
 
@@ -115,6 +120,7 @@ class AudioEngine @Inject constructor(
         if (isNativeLibraryLoaded && nativeHandle != 0L) {
             try {
                 nativeStop(nativeHandle)
+                platformInputEffects.release()
                 // Explicitly delete native engine instance when stopping
                 nativeDelete(nativeHandle)
                 nativeHandle = 0
@@ -141,6 +147,12 @@ class AudioEngine @Inject constructor(
     fun setNoiseSuppressionEnabled(enabled: Boolean) {
         currentConfig = currentConfig.copy(noiseSuppressionEnabled = enabled)
         applyToNative { nativeSetNoiseSuppressionEnabled(it, enabled) }
+        streamManager.updateConfig(currentConfig)
+    }
+
+    fun setAutomaticGainControlEnabled(enabled: Boolean) {
+        currentConfig = currentConfig.copy(automaticGainControlEnabled = enabled)
+        applyToNative { nativeSetAutomaticGainControlEnabled(it, enabled) }
         streamManager.updateConfig(currentConfig)
     }
     
@@ -196,8 +208,10 @@ class AudioEngine @Inject constructor(
         useCommunicationInputPreset: Boolean
     ): Boolean
     private external fun nativeStop(handle: Long)
+    private external fun nativeGetInputSessionId(handle: Long): Int
     private external fun nativeSetMicrophoneGain(handle: Long, gain: Float)
     private external fun nativeSetNoiseSuppressionEnabled(handle: Long, enabled: Boolean)
+    private external fun nativeSetAutomaticGainControlEnabled(handle: Long, enabled: Boolean)
     private external fun nativeSetDynamicsProcessingEnabled(handle: Long, enabled: Boolean)
     private external fun nativeSetTranscriptModeEnabled(handle: Long, enabled: Boolean)
     private external fun nativeSetSpeechPresenceGainDb(handle: Long, gainDb: Float)
