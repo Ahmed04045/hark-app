@@ -16,10 +16,12 @@ Java_com_thivyanstudios_hark_audio_AudioEngine_nativeDelete(JNIEnv *env, jobject
 extern "C"
 JNIEXPORT jboolean JNICALL
 Java_com_thivyanstudios_hark_audio_AudioEngine_nativeStart(
-        JNIEnv *env, jobject thiz, jlong handle, jint sample_rate, jint frames_per_burst, jint input_device_id) {
+        JNIEnv *env, jobject thiz, jlong handle, jint sample_rate, jint frames_per_burst,
+        jint input_device_id, jboolean use_communication_input_preset) {
     auto *engine = reinterpret_cast<HarkAudioEngine *>(handle);
     if (engine) {
-        return (jboolean) engine->start(sample_rate, frames_per_burst, input_device_id);
+        return (jboolean) engine->start(sample_rate, frames_per_burst, input_device_id,
+                use_communication_input_preset == JNI_TRUE);
     }
     return JNI_FALSE;
 }

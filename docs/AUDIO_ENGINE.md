@@ -58,6 +58,8 @@ The high-pass filter removes low-frequency handling and environmental rumble bef
 
 The engine compiles the upstream RNNoise v0.1.1 C implementation at a pinned commit. It processes 480-sample (10 ms) mono frames at 48 kHz. Input and output callbacks communicate through Oboe's single-producer/single-consumer FIFO; the denoiser state and frame buffers are initialized before streaming, not allocated in the callback. Noise suppression is enabled by default and can be disabled in Audio Engine settings.
 
+Built-in, wired, and USB microphones use Android's `VoiceRecognition` input preset so platform voice-communication suppression does not pre-process the signal before RNNoise. Bluetooth headset microphones use `VoiceCommunication` to retain compatibility with communication-profile routing.
+
 ### 3. Speech-Presence Peaking EQ
 
 - **Filter Type**: 2nd Order Biquad peaking EQ

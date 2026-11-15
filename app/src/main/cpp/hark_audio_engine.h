@@ -20,7 +20,8 @@ public:
     HarkAudioEngine();
     ~HarkAudioEngine() override;
 
-    bool start(int32_t sampleRate, int32_t framesPerBurst, int32_t inputDeviceId);
+    bool start(int32_t sampleRate, int32_t framesPerBurst, int32_t inputDeviceId,
+               bool useCommunicationInputPreset);
     void stop();
 
     int32_t readTranscriptionData(float *target, int32_t numFrames);
@@ -99,6 +100,7 @@ private:
     std::mutex mRestartThreadLock;
     int32_t mFramesPerBurst = 192;
     int32_t mInputDeviceId = -1;
+    bool mUseCommunicationInputPreset = false;
     static constexpr int32_t kMaxFrames = 2048;
     int32_t mInputSampleRate = 48000;
     int32_t mInputChannelCount = 1;

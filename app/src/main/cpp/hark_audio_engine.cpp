@@ -14,7 +14,9 @@ HarkAudioEngine::~HarkAudioEngine() {
     stop();
 }
 
-bool HarkAudioEngine::start(int32_t sampleRate, int32_t framesPerBurst, int32_t inputDeviceId) {
+bool HarkAudioEngine::start(
+        int32_t sampleRate, int32_t framesPerBurst, int32_t inputDeviceId,
+        bool useCommunicationInputPreset) {
     mShouldBeStreaming.store(false, std::memory_order_release);
     joinRestartThread();
 
@@ -24,6 +26,7 @@ bool HarkAudioEngine::start(int32_t sampleRate, int32_t framesPerBurst, int32_t 
     mSampleRate = 48000;
     mFramesPerBurst = framesPerBurst;
     mInputDeviceId = inputDeviceId;
+    mUseCommunicationInputPreset = useCommunicationInputPreset;
 
     bool success = openStreamsLocked();
     mShouldBeStreaming.store(success, std::memory_order_release);
@@ -71,7 +74,9 @@ bool HarkAudioEngine::openStreamsLocked() {
             ->setFormat(oboe::AudioFormat::Float)
             ->setChannelCount(oboe::ChannelCount::Mono)
             ->setSampleRate(mSampleRate)
-            ->setInputPreset(oboe::InputPreset::VoiceCommunication)
+            ->setInputPreset(mUseCommunicationInputPreset
+                    ? oboe::InputPreset::VoiceCommunication
+                    : oboe::InputPreset::VoiceRecognition)
             ->setDataCallback(this)
             ->setErrorCallback(this);
     if (mInputDeviceId >= 0) {

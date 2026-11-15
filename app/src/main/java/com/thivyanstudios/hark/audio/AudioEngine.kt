@@ -59,7 +59,7 @@ class AudioEngine @Inject constructor(
         }
     }
 
-    fun start(inputDeviceId: Int = -1) {
+    fun start(inputDeviceId: Int = -1, useCommunicationInputPreset: Boolean = false) {
         if (_isStreaming.value) return
         
         if (!isNativeLibraryLoaded) {
@@ -79,7 +79,13 @@ class AudioEngine @Inject constructor(
         var success = false
         if (isNativeLibraryLoaded && nativeHandle != 0L) {
             try {
-                success = nativeStart(nativeHandle, sampleRate, framesPerBurst, inputDeviceId)
+                success = nativeStart(
+                    nativeHandle,
+                    sampleRate,
+                    framesPerBurst,
+                    inputDeviceId,
+                    useCommunicationInputPreset
+                )
             } catch (_: UnsatisfiedLinkError) {
                 HarkLog.e(TAG, "Native start failed")
             }
@@ -182,7 +188,13 @@ class AudioEngine @Inject constructor(
 
     private external fun nativeCreate(): Long
     private external fun nativeDelete(handle: Long)
-    private external fun nativeStart(handle: Long, sampleRate: Int, framesPerBurst: Int, inputDeviceId: Int): Boolean
+    private external fun nativeStart(
+        handle: Long,
+        sampleRate: Int,
+        framesPerBurst: Int,
+        inputDeviceId: Int,
+        useCommunicationInputPreset: Boolean
+    ): Boolean
     private external fun nativeStop(handle: Long)
     private external fun nativeSetMicrophoneGain(handle: Long, gain: Float)
     private external fun nativeSetNoiseSuppressionEnabled(handle: Long, enabled: Boolean)

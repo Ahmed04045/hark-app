@@ -350,7 +350,14 @@ class AudioStreamingService : Service(), AudioStreamingController {
                 withContext(ioDispatcher) {
                     // Initialize Sherpa before starting engine
                     prepareSherpa()
-                    audioEngine.start(_selectedInputDeviceId.value ?: -1)
+                    val inputDeviceId = _selectedInputDeviceId.value ?: -1
+                    val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+                    val inputDevice = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+                        .firstOrNull { it.id == inputDeviceId }
+                    val useCommunicationInputPreset = inputDevice?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                            inputDevice?.type == AudioDeviceInfo.TYPE_BLE_HEADSET)
+                    audioEngine.start(inputDeviceId, useCommunicationInputPreset)
                     startTranscriptionLoop()
                     startLevelMonitoringLoop()
                 }
