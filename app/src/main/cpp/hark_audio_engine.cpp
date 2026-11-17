@@ -39,9 +39,13 @@ bool HarkAudioEngine::openStreamsLocked() {
     // Reset processing states
     mEnvelope = 0.0f;
     mLimiterGain = 1.0f;
+    mLimiterEnvelope = 0.0f;
     mAutomaticGain = 1.0f;
+    mAgcVoiceHangoverFrames = 0;
     mLimiterReleaseCoefficient =
             expf(-1.0f / (static_cast<float>(mSampleRate) * 0.080f));
+    mLimiterAttackCoefficient =
+            expf(-1.0f / (static_cast<float>(mSampleRate) * 0.001f));
     mRnnoiseOutputOffset = kRnnoiseFrameSize;
     mIsBuffering = true;
     mInputResamplePhase = 0.0f;
@@ -424,45 +428,73 @@ void HarkAudioEngine::updateSpeechPresenceCoefficients(int32_t sampleRate, float
 
 void HarkAudioEngine::processRnnoiseFrame(
         bool noiseSuppressionEnabled, bool dynamicsEnabled, float gain) {
-    float sumSquares = 0.0f;
     for (int32_t i = 0; i < kRnnoiseFrameSize; ++i) {
         const float highPassed = mHighPass.process(mRnnoiseInput[i]);
-        mRnnoiseScratch[i] = highPassed;
-        sumSquares += highPassed * highPassed;
+        mRnnoiseScratch[i] = highPassed * 32768.0f;
     }
 
-    if (mIsAutomaticGainControlEnabled.load(std::memory_order_acquire)) {
-        constexpr float kTargetRms = 0.06309573f; // -24 dBFS
-        constexpr float kMinimumRms = 0.0001f;
-        constexpr float kMinimumGain = 0.25f;
-        constexpr float kMaximumGain = 16.0f;
-        const float inputRms = std::sqrt(sumSquares / kRnnoiseFrameSize);
-        const float targetGain = inputRms < kMinimumRms
-                ? 1.0f
-                : std::clamp(kTargetRms / inputRms, kMinimumGain, kMaximumGain);
-        const float timeConstant = targetGain > mAutomaticGain ? 0.45f : 0.06f;
-        const float frameSeconds =
-                static_cast<float>(kRnnoiseFrameSize) / static_cast<float>(mSampleRate);
-        const float smoothing = expf(-frameSeconds / timeConstant);
-        mAutomaticGain = targetGain + smoothing * (mAutomaticGain - targetGain);
-    } else {
-        mAutomaticGain = 1.0f;
-    }
-
-    for (int32_t i = 0; i < kRnnoiseFrameSize; ++i) {
-        mRnnoiseScratch[i] *= mAutomaticGain * 32768.0f;
-    }
-
+    float voiceActivityProbability = 0.0f;
     if (noiseSuppressionEnabled && mRnnoiseState) {
-        rnnoise_process_frame(mRnnoiseState, mRnnoiseOutput, mRnnoiseScratch);
+        voiceActivityProbability =
+                rnnoise_process_frame(mRnnoiseState, mRnnoiseOutput, mRnnoiseScratch);
     } else {
         std::copy_n(mRnnoiseScratch, kRnnoiseFrameSize, mRnnoiseOutput);
     }
 
+    const bool automaticGainEnabled =
+            mIsAutomaticGainControlEnabled.load(std::memory_order_acquire);
+    float inputSumSquares = 0.0f;
+    float adjustedSumSquares = 0.0f;
     for (int32_t i = 0; i < kRnnoiseFrameSize; ++i) {
         const float denoised = mRnnoiseOutput[i] / 32768.0f;
-        const float clarityAdjusted = mSpeechPresenceEq.process(denoised);
-        float gained = clarityAdjusted * gain;
+        inputSumSquares += denoised * denoised;
+        const float adjusted = mSpeechPresenceEq.process(denoised) * gain;
+        mRnnoiseScratch[i] = adjusted;
+        adjustedSumSquares += adjusted * adjusted;
+    }
+    const float inputRms =
+            std::sqrt(inputSumSquares / static_cast<float>(kRnnoiseFrameSize));
+    const float adjustedRms =
+            std::sqrt(adjustedSumSquares / static_cast<float>(kRnnoiseFrameSize));
+
+    if (!automaticGainEnabled) {
+        mAutomaticGain = 1.0f;
+        mAgcVoiceHangoverFrames = 0;
+    } else {
+        constexpr float kMinimumInputRms = 0.001f; // -60 dBFS
+        constexpr float kTargetRms = 0.12589254f; // -18 dBFS
+        constexpr float kMinimumGain = 0.01f;
+        constexpr float kMaximumGain = 8.0f;
+        constexpr float kMinimumVoiceActivityProbability = 0.35f;
+        constexpr int32_t kVoiceHangoverFrames = 20;
+        const bool voiceDetected = inputRms >= kMinimumInputRms &&
+                (!noiseSuppressionEnabled ||
+                        voiceActivityProbability >= kMinimumVoiceActivityProbability);
+
+        if (voiceDetected) {
+            mAgcVoiceHangoverFrames = kVoiceHangoverFrames;
+        } else if (mAgcVoiceHangoverFrames > 0) {
+            --mAgcVoiceHangoverFrames;
+        }
+
+        float targetGain = 1.0f;
+        if (voiceDetected) {
+            targetGain = std::clamp(
+                    kTargetRms / std::max(adjustedRms, kMinimumInputRms),
+                    kMinimumGain, kMaximumGain);
+        } else if (mAgcVoiceHangoverFrames > 0) {
+            targetGain = mAutomaticGain;
+        }
+
+        const float timeConstant = targetGain > mAutomaticGain ? 0.25f : 0.08f;
+        const float frameSeconds =
+                static_cast<float>(kRnnoiseFrameSize) / static_cast<float>(mSampleRate);
+        const float smoothing = expf(-frameSeconds / timeConstant);
+        mAutomaticGain = targetGain + smoothing * (mAutomaticGain - targetGain);
+    }
+
+    for (int32_t i = 0; i < kRnnoiseFrameSize; ++i) {
+        float gained = mRnnoiseScratch[i] * mAutomaticGain;
         if (dynamicsEnabled) {
             gained = applySoftKneeLimiter(gained);
         }
@@ -497,7 +529,13 @@ float HarkAudioEngine::applySoftKneeLimiter(float input) {
 float HarkAudioEngine::applyPeakLimiter(float input) {
     constexpr float threshold = 0.70794578f; // -3 dBFS
     const float absInput = std::abs(input);
-    const float targetGain = absInput > threshold ? threshold / absInput : 1.0f;
+    const float envelopeCoefficient = absInput > mLimiterEnvelope
+            ? mLimiterAttackCoefficient
+            : mLimiterReleaseCoefficient;
+    mLimiterEnvelope = envelopeCoefficient * mLimiterEnvelope +
+            (1.0f - envelopeCoefficient) * absInput;
+    const float targetGain =
+            mLimiterEnvelope > threshold ? threshold / mLimiterEnvelope : 1.0f;
 
     if (targetGain < mLimiterGain) {
         mLimiterGain = targetGain;
@@ -506,7 +544,15 @@ float HarkAudioEngine::applyPeakLimiter(float input) {
                 (1.0f - mLimiterReleaseCoefficient) * targetGain;
     }
 
-    return std::clamp(input * mLimiterGain, -threshold, threshold);
+    const float limited = input * mLimiterGain;
+    constexpr float kneeStart = threshold * 0.9f;
+    const float absLimited = std::abs(limited);
+    if (absLimited <= kneeStart) return limited;
+
+    const float kneeWidth = threshold - kneeStart;
+    const float compressedMagnitude = kneeStart + kneeWidth *
+            tanhf((absLimited - kneeStart) / kneeWidth);
+    return std::copysign(compressedMagnitude, limited);
 }
 
 void HarkAudioEngine::onErrorAfterClose(oboe::AudioStream *audioStream, oboe::Result error) {

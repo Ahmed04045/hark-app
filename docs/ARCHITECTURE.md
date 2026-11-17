@@ -82,8 +82,8 @@ flowchart TD
 - **[AudioStreamManager.kt](file:///D:/Development/hark-app/app/src/main/java/com/thivyanstudios/hark/audio/stream/AudioStreamManager.kt)** & **[DefaultAudioProcessor.kt](file:///D:/Development/hark-app/app/src/main/java/com/thivyanstudios/hark/audio/processor/DefaultAudioProcessor.kt)**: Pure Java/Kotlin fallback stream engine utilizing `AudioRecord` and `AudioTrack`.
 
 ### 3. Background Service Layer (`com.thivyanstudios.hark.service`)
-- **[AudioStreamingService.kt](file:///D:/Development/hark-app/app/src/main/java/com/thivyanstudios/hark/service/AudioStreamingService.kt)**: Android `ForegroundService` running with `FOREGROUND_SERVICE_TYPE_MICROPHONE`.
-  - Holds a `PowerManager.WakeLock` (partial) to ensure uninterrupted audio streaming when the screen turns off.
+- **[AudioStreamingService.kt](../app/src/main/java/com/thivyanstudios/hark/service/AudioStreamingService.kt)**: Android `ForegroundService` running with `FOREGROUND_SERVICE_TYPE_MICROPHONE`.
+  - Holds a partial `PowerManager.WakeLock` while streaming to keep the CPU awake after the screen turns off. Device-specific battery policies and audio-route behavior can still affect background capture.
   - Implements `AudioManager.OnAudioFocusChangeListener` to handle calls, alarms, and transient focus shifts.
   - Registers `AudioDeviceCallback` to detect ASHA hearing aids, Bluetooth headsets (A2DP/SCO/BLE), and wired headphones.
   - Runs the asynchronous STT decoding loop consuming samples from the native transcription FIFO.

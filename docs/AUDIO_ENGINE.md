@@ -76,7 +76,9 @@ The optional Dynamics Processing setting applies the existing soft-knee stage be
 
 ### 5. Software Automatic Gain Control
 
-AGC is enabled by default and can be toggled in Audio Engine settings. It normalizes each 10 ms frame toward -24 dBFS before RNNoise, with gain limited to -12 dB through +24 dB. Gain rises over about 450 ms and backs off over about 60 ms; the existing -3 dBFS limiter still caps output peaks. Putting AGC before RNNoise gives quiet speech a better chance of surviving denoising. AGC cannot distinguish quiet speech from quiet noise, so background noise can become more audible when RNNoise is disabled. Acoustic echo cancellation is explicitly disabled when the platform permits; headphones are recommended to avoid speaker-to-microphone feedback.
+AGC is enabled by default and can be toggled in Audio Engine settings. For the built-in phone microphone, high-passed audio is sent to RNNoise at its normal level. The speech-presence EQ and manual microphone gain are then applied before AGC measures the level, so increasing those controls does not simply drive the peak limiter into distortion. With noise suppression enabled, RNNoise's voice-activity estimate and a -60 dBFS input floor gate gain increases. AGC targets -18 dBFS, limits gain to -40 dB through +18 dB, increases gain over about 250 ms, and reduces it over about 80 ms. A short voice hangover smooths gain across pauses within speech. The final -3 dBFS peak limiter follows a smoothed envelope and soft knee to reduce harsh clipping.
+
+When noise suppression is disabled, AGC falls back to a level gate and cannot distinguish quiet speech from quiet room noise; background noise may still become more audible. The transcription path uses its own input scaling and is not normalized by this playback AGC. Acoustic echo cancellation is explicitly disabled when the platform permits; headphones are recommended to avoid speaker-to-microphone feedback.
 
 ### 6. Pre-Buffering & Jitter Absorption
 

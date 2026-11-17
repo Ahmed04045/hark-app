@@ -90,8 +90,11 @@ private:
     float mRnnoiseOutput[kRnnoiseFrameSize]{};
     int32_t mRnnoiseOutputOffset = kRnnoiseFrameSize;
     float mLimiterGain = 1.0f;
+    float mLimiterEnvelope = 0.0f;
+    float mLimiterAttackCoefficient = 0.0f;
     float mLimiterReleaseCoefficient = 0.0f;
     float mAutomaticGain = 1.0f;
+    int32_t mAgcVoiceHangoverFrames = 0;
 
     bool mIsBuffering = true;
 

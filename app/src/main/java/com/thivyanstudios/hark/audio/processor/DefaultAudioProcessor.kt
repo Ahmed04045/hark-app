@@ -7,7 +7,9 @@ import com.thivyanstudios.hark.audio.model.AudioEngineEvent
 import com.thivyanstudios.hark.audio.model.AudioProcessingConfig
 import com.thivyanstudios.hark.audio.stream.AudioSink
 import com.thivyanstudios.hark.audio.stream.AudioSource
+import com.thivyanstudios.hark.util.Constants
 import kotlinx.coroutines.channels.Channel
+import kotlin.math.sqrt
 
 /**
  * A simplified Java-based audio processor used only as a fallback 
@@ -20,7 +22,7 @@ class DefaultAudioProcessor(private val events: Channel<AudioEngineEvent>) : Aud
     
     // Pre-allocated buffer to reduce GC pressure during audio processing
     private var processingBuffer: FloatArray? = null
-    private var automaticGain = 1.0f
+    private val automaticGainController = AutomaticGainController()
     private val platformInputEffects = PlatformInputEffects()
 
     override fun process(
@@ -69,21 +71,21 @@ class DefaultAudioProcessor(private val events: Channel<AudioEngineEvent>) : Aud
             for (i in 0 until size) {
                 sumSquares += buffer[i] * buffer[i]
             }
-            val inputRms = kotlin.math.sqrt(sumSquares / size).toFloat()
-            val targetGain = if (inputRms < 0.0001f) 1.0f else {
-                (0.06309573f / inputRms).coerceIn(0.25f, 16.0f)
-            }
-            val timeConstant = if (targetGain > automaticGain) 0.45f else 0.06f
-            val smoothing = kotlin.math.exp(-size / (44100.0 * timeConstant)).toFloat()
-            automaticGain = targetGain + smoothing * (automaticGain - targetGain)
+            val inputRms = sqrt(sumSquares / size).toFloat()
+            automaticGainController.update(
+                inputRms = inputRms,
+                appliedGain = currentGain,
+                frameSamples = size,
+                sampleRate = Constants.Audio.SAMPLE_RATE
+            )
         } else {
-            automaticGain = 1.0f
+            automaticGainController.reset()
         }
         
         for (i in 0 until size) {
             // In the fallback processor, we simulate the same logic as native
             // Primary path (gain) + Ambient path (ambientGain)
-            val adjustedSample = buffer[i] * automaticGain
+            val adjustedSample = buffer[i] * automaticGainController.gain
             val primary = adjustedSample * currentGain
             val ambient = adjustedSample * ambientGain
             
@@ -96,7 +98,7 @@ class DefaultAudioProcessor(private val events: Channel<AudioEngineEvent>) : Aud
     override fun release() {
         platformInputEffects.release()
         processingBuffer = null
-        automaticGain = 1.0f
+        automaticGainController.reset()
     }
 
     companion object {

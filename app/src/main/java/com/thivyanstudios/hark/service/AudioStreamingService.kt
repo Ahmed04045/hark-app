@@ -347,7 +347,7 @@ class AudioStreamingService : Service(), AudioStreamingController {
                     startForeground(NOTIFICATION_ID, notificationHelper.createNotification())
                 }
                 
-                wakeLock?.acquire(60 * 60 * 1000L) // 1 hour timeout
+                wakeLock?.acquire()
                 withContext(ioDispatcher) {
                     // Initialize Sherpa before starting engine
                     prepareSherpa()
