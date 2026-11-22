@@ -44,7 +44,9 @@ class AudioEngine @Inject constructor(
     private val _errorEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val errorEvents = _errorEvents.asSharedFlow()
 
-    private var currentConfig = AudioProcessingConfig()
+    private var nativeConfiguration = NativeAudioConfiguration()
+    private val currentConfig: AudioProcessingConfig
+        get() = nativeConfiguration.processing
 
     init {
         loadNativeLibrary()
@@ -72,6 +74,7 @@ class AudioEngine @Inject constructor(
         if (isNativeLibraryLoaded && (nativeHandle == 0L)) {
             nativeHandle = nativeCreate()
         }
+        applyCurrentConfigurationToNative()
 
         val sampleRate = getOptimalSampleRate()
         val framesPerBurst = getOptimalFramesPerBurst()
@@ -139,35 +142,47 @@ class AudioEngine @Inject constructor(
     // --- Configuration Methods ---
 
     fun setMicrophoneGain(gain: Float) {
-        currentConfig = currentConfig.copy(microphoneGain = gain)
-        applyToNative { nativeSetMicrophoneGain(it, gain) }
+        nativeConfiguration = nativeConfiguration.copy(
+            processing = currentConfig.copy(microphoneGain = gain)
+        )
+        applyCurrentConfigurationToNative()
         streamManager.updateConfig(currentConfig)
     }
 
     fun setNoiseSuppressionEnabled(enabled: Boolean) {
-        currentConfig = currentConfig.copy(noiseSuppressionEnabled = enabled)
-        applyToNative { nativeSetNoiseSuppressionEnabled(it, enabled) }
+        nativeConfiguration = nativeConfiguration.copy(
+            processing = currentConfig.copy(noiseSuppressionEnabled = enabled)
+        )
+        applyCurrentConfigurationToNative()
         streamManager.updateConfig(currentConfig)
     }
 
     fun setAutomaticGainControlEnabled(enabled: Boolean) {
-        currentConfig = currentConfig.copy(automaticGainControlEnabled = enabled)
-        applyToNative { nativeSetAutomaticGainControlEnabled(it, enabled) }
+        nativeConfiguration = nativeConfiguration.copy(
+            processing = currentConfig.copy(automaticGainControlEnabled = enabled)
+        )
+        applyCurrentConfigurationToNative()
         streamManager.updateConfig(currentConfig)
     }
     
     fun setDynamicsProcessingEnabled(enabled: Boolean) {
-        currentConfig = currentConfig.copy(dynamicsProcessingEnabled = enabled)
-        applyToNative { nativeSetDynamicsProcessingEnabled(it, enabled) }
+        nativeConfiguration = nativeConfiguration.copy(
+            processing = currentConfig.copy(dynamicsProcessingEnabled = enabled)
+        )
+        applyCurrentConfigurationToNative()
         streamManager.updateConfig(currentConfig)
     }
 
     fun setTranscriptModeEnabled(enabled: Boolean) {
-        applyToNative { nativeSetTranscriptModeEnabled(it, enabled) }
+        nativeConfiguration = nativeConfiguration.copy(transcriptModeEnabled = enabled)
+        applyCurrentConfigurationToNative()
     }
 
     fun setSpeechPresenceGainDb(gainDb: Float) {
-        applyToNative { nativeSetSpeechPresenceGainDb(it, gainDb.coerceIn(3.0f, 8.0f)) }
+        nativeConfiguration = nativeConfiguration.copy(
+            speechPresenceGainDb = gainDb.coerceIn(3.0f, 8.0f)
+        )
+        applyCurrentConfigurationToNative()
     }
 
     // --- Transcription Data Access ---
@@ -190,9 +205,38 @@ class AudioEngine @Inject constructor(
         return 0.0f
     }
 
-    private inline fun applyToNative(action: (Long) -> Unit) {
-        if (isNativeLibraryLoaded && nativeHandle != 0L) {
-            try { action(nativeHandle) } catch (_: UnsatisfiedLinkError) {}
+    private fun applyCurrentConfigurationToNative() {
+        if (!isNativeLibraryLoaded || nativeHandle == 0L) return
+
+        val handle = nativeHandle
+        try {
+            nativeConfiguration.applyTo(object : NativeAudioConfigurationTarget {
+                override fun setMicrophoneGain(gain: Float) {
+                    nativeSetMicrophoneGain(handle, gain)
+                }
+
+                override fun setNoiseSuppressionEnabled(enabled: Boolean) {
+                    nativeSetNoiseSuppressionEnabled(handle, enabled)
+                }
+
+                override fun setAutomaticGainControlEnabled(enabled: Boolean) {
+                    nativeSetAutomaticGainControlEnabled(handle, enabled)
+                }
+
+                override fun setDynamicsProcessingEnabled(enabled: Boolean) {
+                    nativeSetDynamicsProcessingEnabled(handle, enabled)
+                }
+
+                override fun setTranscriptModeEnabled(enabled: Boolean) {
+                    nativeSetTranscriptModeEnabled(handle, enabled)
+                }
+
+                override fun setSpeechPresenceGainDb(gainDb: Float) {
+                    nativeSetSpeechPresenceGainDb(handle, gainDb)
+                }
+            })
+        } catch (e: UnsatisfiedLinkError) {
+            HarkLog.e(TAG, "Failed to apply native audio configuration", e)
         }
     }
 

@@ -8,6 +8,8 @@ This document details the low-latency C++ native audio engine (**HarkAudioEngine
 
 The core audio engine (`app/src/main/cpp/hark_audio_engine.cpp` / `hark_audio_engine.h`) is written in C++17 using **Google Oboe**. It captures from a selectable input device, converts the negotiated input rate to RNNoise's 48 kHz processing rate, applies speech-focused DSP, and converts to the output route's negotiated rate and channel count. The app does not request audio focus, so Android can mix the output with other media playback.
 
+Saved processing settings are applied whenever the native engine is created or restarted, so microphone gain, AGC, noise suppression, and speech-presence EQ remain consistent across stream sessions.
+
 ### Key Performance Goals
 - **Ultra-low latency**: Hardware-direct AAudio/OpenSL ES performance mode (`oboe::PerformanceMode::LowLatency`).
 - **Zero dynamic memory allocation in callback**: Pre-allocated buffers prevent Garbage Collection (GC) pauses and audio glitches.
